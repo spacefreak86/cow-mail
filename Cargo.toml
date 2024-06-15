@@ -1,0 +1,18 @@
+[package]
+name = "email-message"
+version = "0.0.1"
+authors = ["Thomas Oettli <spacefreak@noop.ch>"]
+edition = "2021"
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[dependencies]
+email = "*"
+email-encoding = "*"
+lettre = {version="*", features=["builder"]}
+charset = "*"
+mailparse = "*"
+mediatype = "*"
+rand = "*"
