@@ -93,6 +93,10 @@ pub trait Header<'a>: Clone + Display {
         decode_latin1(self.get_key_raw())
     }
 
+    fn key_eq(&self, key: &str) -> bool {
+        self.get_key().eq_ignore_ascii_case(key)
+    }
+
     fn get_value_ref(&self) -> Cow<str> {
         // RFC 6532 says that header values can be UTF-8. Let's try that first, and
         // fall back to latin1 if that fails

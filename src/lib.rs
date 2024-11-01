@@ -114,7 +114,7 @@ impl From<&str> for ContentType {
     }
 }
 
-pub trait Mail<'a, T: Header<'a>>: HeaderMap<'a, T> {
+pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     fn clear(&mut self);
     fn clear_content(&mut self);
     fn default_ctype(&self) -> ContentType;
@@ -122,7 +122,7 @@ pub trait Mail<'a, T: Header<'a>>: HeaderMap<'a, T> {
     fn raw_body_mut(&mut self) -> &mut Vec<u8>;
 
     fn get_content_type(&self) -> ContentType {
-        self.get_first_header("Content-Type")
+        self.find_header("Content-Type")
             .map(|h| ContentType::from(h.get_value_ref().as_ref()))
             .unwrap_or_else(|| self.default_ctype())
     }
@@ -151,7 +151,7 @@ pub trait Mail<'a, T: Header<'a>>: HeaderMap<'a, T> {
     }
 
     fn get_content_disposition(&self) -> Option<ParsedContentDisposition> {
-        if let Some(header) = self.get_first_header("Content-Disposition") {
+        if let Some(header) = self.find_header("Content-Disposition") {
             let value = header.get_value();
             return Some(parse_content_disposition(&value));
         }
@@ -167,7 +167,7 @@ pub trait Mail<'a, T: Header<'a>>: HeaderMap<'a, T> {
 
     fn get_content(&self) -> Result<String, CowMailError> {
         let ctype = self.get_content_type();
-        let transfer_encoding = self.get_first_value("Content-Transfer-Encoding");
+        let transfer_encoding = self.find_value("Content-Transfer-Encoding");
         match self.get_content_encoded(&ctype, &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded_as_string()?),
             Body::SevenBit(body) | Body::EightBit(body) => Ok(body.get_as_string()?),
@@ -177,7 +177,7 @@ pub trait Mail<'a, T: Header<'a>>: HeaderMap<'a, T> {
 
     fn get_content_raw(&self) -> Result<Vec<u8>, CowMailError> {
         let ctype = self.get_content_type();
-        let transfer_encoding = self.get_first_value("Content-Transfer-Encoding");
+        let transfer_encoding = self.find_value("Content-Transfer-Encoding");
         match self.get_content_encoded(&ctype, &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded()?),
             Body::SevenBit(body) | Body::EightBit(body) => Ok(Vec::<u8>::from(body.get_raw())),
@@ -219,7 +219,7 @@ impl<'a> Default for CowMail<'a, CowHeader<'a>> {
     }
 }
 
-impl<'a, H: Header<'a>> CowMail<'a, H> {
+impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     pub fn new() -> Self {
         Self {
             headers: Vec::new(),
@@ -246,7 +246,7 @@ impl<'a, H: Header<'a>> CowMail<'a, H> {
     }
 
     pub fn get_content_type(&self) -> ContentType {
-        self.get_first_header("Content-Type")
+        self.find_header("Content-Type")
             .map(|h| ContentType::from(h.get_value_ref().as_ref()))
             .unwrap_or_else(|| self.default_ctype.clone())
     }
@@ -282,7 +282,7 @@ impl<'a, H: Header<'a>> CowMail<'a, H> {
     }
 
     pub fn get_content_disposition(&self) -> Option<ParsedContentDisposition> {
-        if let Some(header) = self.get_first_header("Content-Disposition") {
+        if let Some(header) = self.find_header("Content-Disposition") {
             let value = header.get_value();
             return Some(parse_content_disposition(&value));
         }
@@ -298,7 +298,7 @@ impl<'a, H: Header<'a>> CowMail<'a, H> {
 
     pub fn get_content(&self) -> Result<String, CowMailError> {
         let ctype = self.get_content_type();
-        let transfer_encoding = self.headers.get_first_value("Content-Transfer-Encoding");
+        let transfer_encoding = self.headers.find_value("Content-Transfer-Encoding");
         match self.get_content_encoded(&ctype, &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded_as_string()?),
             Body::SevenBit(body) | Body::EightBit(body) => Ok(body.get_as_string()?),
@@ -308,7 +308,7 @@ impl<'a, H: Header<'a>> CowMail<'a, H> {
 
     pub fn get_content_raw(&self) -> Result<Vec<u8>, CowMailError> {
         let ctype = self.get_content_type();
-        let transfer_encoding = self.headers.get_first_value("Content-Transfer-Encoding");
+        let transfer_encoding = self.headers.find_value("Content-Transfer-Encoding");
         match self.get_content_encoded(&ctype, &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded()?),
             Body::SevenBit(body) | Body::EightBit(body) => Ok(Vec::<u8>::from(body.get_raw())),
@@ -363,14 +363,14 @@ impl<'a, H: Header<'a>> CowMail<'a, H> {
 
     pub fn get_boundary(&self) -> Option<String> {
         self.headers
-            .get_first_header("Content-Type")
+            .find_header("Content-Type")
             .and_then(|h| h.get_param("boundary"))
     }
 
     pub fn set_boundary<T: ToString>(&mut self, boundary: T) -> Result<(), CowMailError> {
         let header = self
             .headers
-            .get_first_header_mut("Content-Type")
+            .find_header_mut("Content-Type")
             .ok_or(CowMailError::MissingContentTypeHeader)?;
         header.set_param("boundary", boundary.to_string());
         Ok(())
@@ -392,7 +392,7 @@ impl<'a, H: Header<'a>> CowMail<'a, H> {
             .and_then(|start| {
                 self.subparts.iter().position(|part| {
                     part.headers
-                        .get_first_value("Content-ID")
+                        .find_value("Content-ID")
                         .map(|cid| cid.eq(start))
                         .unwrap_or(false)
                 })
@@ -476,7 +476,7 @@ impl<'a, H: Header<'a>> CowMail<'a, H> {
         subpart.end_bytes = self.end_bytes;
         self.end_bytes = b"\r\n";
 
-        if self.headers.get_first_header("MIME-Version").is_none() {
+        if self.headers.find_header("MIME-Version").is_none() {
             self.headers.add_header("MIME-Version", "1.0");
         }
 
@@ -524,7 +524,7 @@ impl<'a, H: Header<'a>> CowMail<'a, H> {
     }
 
     pub fn add_related(&mut self, mut subpart: CowMail<'a, H>) -> Result<(), CowMailError> {
-        if subpart.headers.get_first_header("Content-Disposition").is_none() {
+        if subpart.headers.find_header("Content-Disposition").is_none() {
             subpart.headers.add_header("Content-Disposition", "inline");
         }
         self.add_multipart(subpart, MediaType::new(MULTIPART, RELATED))
@@ -535,7 +535,7 @@ impl<'a, H: Header<'a>> CowMail<'a, H> {
     }
 
     pub fn add_attachment(&mut self, mut subpart: CowMail<'a, H>) -> Result<(), CowMailError> {
-        if subpart.headers.get_first_header("Content-Disposition").is_none() {
+        if subpart.headers.find_header("Content-Disposition").is_none() {
             subpart.headers.add_header("Content-Disposition", "attachment");
         }
         self.add_multipart(subpart, MediaType::new(MULTIPART, MIXED))
@@ -581,21 +581,21 @@ impl<'a, H: Header<'a>> CowMail<'a, H> {
     }
 }
 
-impl<'a, H: Header<'a>> HeaderMap<'a, H> for CowMail<'a, H> {
-    fn get_all_headers(&self, key: &str) -> Vec<&H> {
-        self.headers.get_all_headers(key)
+impl<'a, H: Header<'a> + 'a> HeaderMap<'a, H> for CowMail<'a, H> {
+    fn iter_headers(&'a self, key: &str) -> impl Iterator<Item = &'a H> {
+        self.headers.iter_headers(key)
     }
 
-    fn get_all_headers_mut(&mut self, key: &str) -> Vec<&mut H> {
-        self.headers.get_all_headers_mut(key)
+    fn iter_headers_mut(&'a mut self, key: &str) -> impl Iterator<Item = &'a mut H> {
+        self.headers.iter_headers_mut(key)
     }
 
-    fn get_first_header(&self, key: &str) -> Option<&H> {
-        self.headers.get_first_header(key)
+    fn find_header(&self, key: &str) -> Option<&H> {
+        self.headers.find_header(key)
     }
 
-    fn get_first_header_mut(&mut self, key: &str) -> Option<&mut H> {
-        self.headers.get_first_header_mut(key)
+    fn find_header_mut(&mut self, key: &str) -> Option<&mut H> {
+        self.headers.find_header_mut(key)
     }
 
     /// Examples
@@ -607,13 +607,13 @@ impl<'a, H: Header<'a>> HeaderMap<'a, H> for CowMail<'a, H> {
     ///             "\n",
     ///             "This is a test message").as_bytes())
     ///         .unwrap();
-    ///     let mut values = mail.get_all_values("Subject").into_iter();
+    ///     let mut values = mail.iter_values("Subject");
     ///     assert_eq!(values.next().unwrap(), "Test");
     ///     assert_eq!(values.next().unwrap(), "Test1");
     ///     assert!(values.next().is_none());
     /// ```
-    fn get_all_values(&self, key: &str) -> Vec<String> {
-        self.headers.get_all_values(key)
+    fn iter_values(&'a self, key: &str) -> impl Iterator<Item = String> {
+        self.headers.iter_values(key)
     }
 
     /// Examples
@@ -625,10 +625,10 @@ impl<'a, H: Header<'a>> HeaderMap<'a, H> for CowMail<'a, H> {
     ///             "\n",
     ///             "This is a test message").as_bytes())
     ///         .unwrap();
-    ///     assert_eq!(mail.get_first_value("Subject").unwrap(), "Test");
+    ///     assert_eq!(mail.find_value("Subject").unwrap(), "Test");
     /// ```
-    fn get_first_value(&self, key: &str) -> Option<String> {
-        self.headers.get_first_value(key)
+    fn find_value(&self, key: &str) -> Option<String> {
+        self.headers.find_value(key)
     }
 
     /// Examples
@@ -636,7 +636,7 @@ impl<'a, H: Header<'a>> HeaderMap<'a, H> for CowMail<'a, H> {
     ///     use email_message::{CowMail, HeaderMap};
     ///     let mut mail = CowMail::default();
     ///     mail.add_header("Subject", "Test");
-    ///     assert_eq!(mail.get_first_value("Subject").unwrap(), "Test");
+    ///     assert_eq!(mail.find_value("Subject").unwrap(), "Test");
     /// ```
     fn add_header<K: ToString, V: ToString>(&mut self, key: K, value: V) {
         self.headers.add_header(key, value)
@@ -798,11 +798,11 @@ impl std::io::Read for CowMailReader<'_> {
     }
 }
 
-pub fn parse_mail<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<CowMail<H>, &'static str> {
+pub fn parse_mail<'a, H: Header<'a> + 'a>(raw_data: &'a [u8]) -> Result<CowMail<H>, &'static str> {
     parse_mail_recursive(raw_data, false)
 }
 
-fn parse_mail_recursive<'a, H: Header<'a>>(
+fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
     raw_data: &'a [u8],
     mut in_multipart_digest: bool,
 ) -> Result<CowMail<H>, &'static str> {
@@ -811,7 +811,7 @@ fn parse_mail_recursive<'a, H: Header<'a>>(
     let default_ctype = ContentType::default_conditional(in_multipart_digest);
 
     let ctype = headers
-        .get_first_value("Content-Type")
+        .find_value("Content-Type")
         .map(|s| ContentType::from(s.as_str()))
         .unwrap_or(default_ctype.clone());
 
@@ -922,11 +922,11 @@ mod tests {
         }
 
         mail.insert_header("X-Test", "Test1", 1);
-        assert_eq!(mail.get_all_values("X-Test"), ["Test", "Test1", "Test2", "Test3"]);
+        assert_eq!(mail.iter_values("X-Test").collect::<Vec<_>>(), ["Test", "Test1", "Test2", "Test3"]);
 
         mail.replace_all_headers("X-Test", "Test555");
         assert_eq!(
-            mail.get_all_values("X-Test"),
+            mail.iter_values("X-Test").collect::<Vec<_>>(),
             ["Test555", "Test555", "Test555", "Test555"]
         );
 
@@ -934,10 +934,10 @@ mod tests {
         mail.replace_header("X-Test", "Test1", 1);
         mail.replace_header("X-Test", "Test2", 2);
         mail.replace_header("X-Test", "Test3", 3);
-        assert_eq!(mail.get_all_values("X-Test"), ["Test", "Test1", "Test2", "Test3"]);
+        assert_eq!(mail.iter_values("X-Test").collect::<Vec<_>>(), ["Test", "Test1", "Test2", "Test3"]);
 
         mail.remove_header("X-Test", 1);
-        assert_eq!(mail.get_all_values("X-Test"), ["Test", "Test2", "Test3"]);
+        assert_eq!(mail.iter_values("X-Test").collect::<Vec<_>>(), ["Test", "Test2", "Test3"]);
         mail.remove_all_headers("X-Test");
         assert_eq!(mail.headers.len(), 2);
     }
@@ -954,7 +954,7 @@ mod tests {
         assert_eq!(mail.get_content().unwrap(), "This is a test message");
 
         mail.clear_content();
-        assert!(mail.get_first_header("Content-Type").is_none());
+        assert!(mail.find_header("Content-Type").is_none());
         assert_eq!(mail.get_content().unwrap(), "");
         mail.set_content("This is a new test message\n".to_string(), None);
 
@@ -977,7 +977,7 @@ mod tests {
         assert_eq!(ctype.mimetype, "multipart/alternative");
         assert_eq!(ctype.params.get("boundary").unwrap(), &alt_boundary);
         assert_eq!(
-            mail.get_first_header("Content-Type").unwrap().get_value(),
+            mail.find_header("Content-Type").unwrap().get_value(),
             format!("multipart/alternative; boundary=\"{}\"", alt_boundary)
         );
 
