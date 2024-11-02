@@ -119,16 +119,16 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     fn clear_content(&mut self);
     fn default_ctype(&self) -> ContentType;
     fn raw_body(&self) -> &[u8];
-    fn raw_body_mut(&mut self) -> &mut Vec<u8>;
+    fn raw_body_mut(&mut self) -> &mut Cow<'a, [u8]>;
 
-    fn get_content_type(&self) -> ContentType {
+    fn content_type(&self) -> ContentType {
         self.find_header("Content-Type")
             .map(|h| ContentType::from(h.get_value_ref().as_ref()))
             .unwrap_or_else(|| self.default_ctype())
     }
 
     fn message_type(&self) -> MessageType {
-        let ctype = self.get_content_type();
+        let ctype = self.content_type();
         match ctype.mimetype.parse::<MediaTypeBuf>() {
             Ok(mtype) => {
                 let mut res = MessageType::SinglePart;
@@ -150,7 +150,7 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
         }
     }
 
-    fn get_content_disposition(&self) -> Option<ParsedContentDisposition> {
+    fn content_disposition(&self) -> Option<ParsedContentDisposition> {
         if let Some(header) = self.find_header("Content-Disposition") {
             let value = header.get_value();
             return Some(parse_content_disposition(&value));
@@ -159,14 +159,14 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     }
 
     fn is_attachment(&self) -> bool {
-        match self.get_content_disposition() {
+        match self.content_disposition() {
             Some(disp) => matches!(disp.disposition, DispositionType::Attachment),
             None => false,
         }
     }
 
     fn get_content(&self) -> Result<String, CowMailError> {
-        let ctype = self.get_content_type();
+        let ctype = self.content_type();
         let transfer_encoding = self.find_value("Content-Transfer-Encoding");
         match self.get_content_encoded(&ctype, &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded_as_string()?),
@@ -176,7 +176,7 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     }
 
     fn get_content_raw(&self) -> Result<Vec<u8>, CowMailError> {
-        let ctype = self.get_content_type();
+        let ctype = self.content_type();
         let transfer_encoding = self.find_value("Content-Transfer-Encoding");
         match self.get_content_encoded(&ctype, &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded()?),
@@ -190,8 +190,6 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     }
 
 }
-
-
 
 
 
@@ -230,94 +228,11 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.headers.clear();
-        self.body_bytes = Cow::Borrowed(&[]);
-        self.subparts.clear();
-        self.end_bytes = b"\r\n";
-    }
-
-    pub fn clear_content(&mut self) {
-        self.headers
-            .retain(|h| !h.get_key().to_ascii_lowercase().starts_with("content-"));
-        self.body_bytes = Cow::Borrowed(&[]);
-        self.subparts.clear();
-        self.end_bytes = b"\r\n";
-    }
-
-    pub fn get_content_type(&self) -> ContentType {
-        self.find_header("Content-Type")
-            .map(|h| ContentType::from(h.get_value_ref().as_ref()))
-            .unwrap_or_else(|| self.default_ctype.clone())
-    }
-
     fn get_mime_type(&self) -> MediaTypeBuf {
-        self.get_content_type()
+        self.content_type()
             .mimetype
             .parse::<MediaTypeBuf>()
             .unwrap_or_else(|_| MediaTypeBuf::new(TEXT, PLAIN))
-    }
-
-    pub fn message_type(&self) -> MessageType {
-        let ctype = self.get_content_type();
-        match ctype.mimetype.parse::<MediaTypeBuf>() {
-            Ok(mtype) => {
-                let mut res = MessageType::SinglePart;
-                if mtype.ty() == MULTIPART {
-                    if let Some(boundary) = ctype.params.get("boundary") {
-                        res = MessageType::MultiPart(boundary.clone());
-                    }
-                }
-                res
-            }
-            Err(_) => MessageType::SinglePart,
-        }
-    }
-
-    pub fn is_multipart(&self) -> bool {
-        match self.message_type() {
-            MessageType::SinglePart => false,
-            MessageType::MultiPart(_) => true,
-        }
-    }
-
-    pub fn get_content_disposition(&self) -> Option<ParsedContentDisposition> {
-        if let Some(header) = self.find_header("Content-Disposition") {
-            let value = header.get_value();
-            return Some(parse_content_disposition(&value));
-        }
-        None
-    }
-
-    pub fn is_attachment(&self) -> bool {
-        match self.get_content_disposition() {
-            Some(disp) => matches!(disp.disposition, DispositionType::Attachment),
-            None => false,
-        }
-    }
-
-    pub fn get_content(&self) -> Result<String, CowMailError> {
-        let ctype = self.get_content_type();
-        let transfer_encoding = self.headers.find_value("Content-Transfer-Encoding");
-        match self.get_content_encoded(&ctype, &transfer_encoding) {
-            Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded_as_string()?),
-            Body::SevenBit(body) | Body::EightBit(body) => Ok(body.get_as_string()?),
-            Body::Binary(body) => Ok(body.get_as_string()?),
-        }
-    }
-
-    pub fn get_content_raw(&self) -> Result<Vec<u8>, CowMailError> {
-        let ctype = self.get_content_type();
-        let transfer_encoding = self.headers.find_value("Content-Transfer-Encoding");
-        match self.get_content_encoded(&ctype, &transfer_encoding) {
-            Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded()?),
-            Body::SevenBit(body) | Body::EightBit(body) => Ok(Vec::<u8>::from(body.get_raw())),
-            Body::Binary(body) => Ok(Vec::from(body.get_raw())),
-        }
-    }
-
-    pub fn get_content_encoded<'b>(&'b self, ctype: &'b ContentType, transfer_encoding: &Option<String>) -> Body<'b> {
-        Body::new(&self.body_bytes, ctype, transfer_encoding)
     }
 
     pub fn set_content<T: ToString>(&mut self, content: T, ctype: Option<MediaType>) {
@@ -356,9 +271,9 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     pub fn get_filename(&self) -> Option<String> {
-        self.get_content_disposition()
+        self.content_disposition()
             .and_then(|disp| disp.params.get("filename").cloned())
-            .or_else(|| self.get_content_type().params.get("name").cloned())
+            .or_else(|| self.content_type().params.get("name").cloned())
     }
 
     pub fn get_boundary(&self) -> Option<String> {
@@ -386,7 +301,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     fn get_related_candidate(&self) -> usize {
-        self.get_content_type()
+        self.content_type()
             .params
             .get("start")
             .and_then(|start| {
@@ -736,6 +651,36 @@ impl<'a, H: Header<'a> + 'a> HeaderMap<'a, H> for CowMail<'a, H> {
     }
 }
 
+impl<'a, H: Header<'a> + 'a> Mail<'a, H> for CowMail<'a, H> {
+    fn clear(&mut self) {
+        self.headers.clear();
+        self.body_bytes = Cow::Borrowed(&[]);
+        self.subparts.clear();
+        self.end_bytes = b"\r\n";
+    }
+
+    fn clear_content(&mut self) {
+        self.headers
+            .retain(|h| !h.get_key().to_ascii_lowercase().starts_with("content-"));
+        self.body_bytes = Cow::Borrowed(&[]);
+        self.subparts.clear();
+        self.end_bytes = b"\r\n";
+    }
+
+    fn default_ctype(&self) -> ContentType {
+        self.default_ctype.clone()
+    }
+
+    fn raw_body(&self) -> &[u8] {
+        &self.body_bytes
+    }
+
+    fn raw_body_mut(&mut self) -> &mut Cow<'a, [u8]> {
+        &mut self.body_bytes
+    }
+}
+
+
 impl<'a> TryFrom<&'a [u8]> for CowMail<'a, CowHeader<'a>> {
     type Error = &'static str;
 
@@ -895,7 +840,7 @@ fn find_from_u8(line: &[u8], ix_start: usize, key: &[u8]) -> Option<usize> {
 mod tests {
     //use std::io::{Read, Write};
 
-    use crate::{CowHeader, CowMail, Header, HeaderMap};
+    use crate::{CowHeader, CowMail, Mail, Header, HeaderMap};
     use mediatype::{names::*, MediaType};
 
     #[test]
@@ -947,7 +892,7 @@ mod tests {
         let mut mail =
             CowMail::try_from(concat!("Content-Type: text/plain\n", "\n", "This is a test message").as_bytes())
                 .unwrap();
-        let ctype = mail.get_content_type();
+        let ctype = mail.content_type();
         assert_eq!(ctype.mimetype, "text/plain");
         assert_eq!(ctype.charset, "us-ascii");
         assert_eq!(mail.is_multipart(), false);
@@ -958,7 +903,7 @@ mod tests {
         assert_eq!(mail.get_content().unwrap(), "");
         mail.set_content("This is a new test message\n".to_string(), None);
 
-        let ctype = mail.get_content_type();
+        let ctype = mail.content_type();
         assert_eq!(ctype.mimetype, "text/plain");
         assert_eq!(ctype.charset, "UTF-8");
 
@@ -973,7 +918,7 @@ mod tests {
         mail.add_alternative(html).unwrap();
         let alt_boundary = mail.get_boundary().unwrap();
 
-        let ctype = mail.get_content_type();
+        let ctype = mail.content_type();
         assert_eq!(ctype.mimetype, "multipart/alternative");
         assert_eq!(ctype.params.get("boundary").unwrap(), &alt_boundary);
         assert_eq!(
