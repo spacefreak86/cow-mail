@@ -749,7 +749,7 @@ pub fn parse_mail<'a, H: Header<'a> + 'a>(raw_data: &'a [u8]) -> Result<CowMail<
 
 fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
     raw_data: &'a [u8],
-    mut in_multipart_digest: bool,
+    in_multipart_digest: bool,
 ) -> Result<CowMail<H>, &'static str> {
     let (headers, body_idx) = parse_headers::<H>(raw_data)?;
 
@@ -769,7 +769,7 @@ fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
     };
 
     if ctype.mimetype.starts_with("multipart/") && ctype.params.get("boundary").is_some() && raw_data.len() > body_idx {
-        in_multipart_digest = ctype.mimetype == "multipart/digest";
+        let in_multipart_digest = ctype.mimetype == "multipart/digest";
         let boundary = String::from("--") + &ctype.params["boundary"];
         if let Some(body_end_idx) = find_from_u8_line_prefix(raw_data, body_idx, boundary.as_bytes()) {
             mail.body_bytes = Cow::Borrowed(&raw_data[body_idx..body_end_idx]);

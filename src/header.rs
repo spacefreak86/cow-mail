@@ -5,7 +5,7 @@ use std::fmt::{self, Display, Write};
 use charset::decode_latin1;
 use email::rfc2045::Rfc2045Parser;
 use email::FromHeader;
-use email_encoding::headers::EmailWriter;
+use email_encoding::headers::writer::EmailWriter;
 
 fn allowed_str(s: &str) -> bool {
     s.bytes().all(allowed_char)
@@ -15,70 +15,47 @@ const fn allowed_char(c: u8) -> bool {
     c >= 1 && c <= 9 || c == 11 || c == 12 || c >= 14 && c <= 127
 }
 
-struct HeaderValueEncoder<'a> {
-    writer: EmailWriter<'a>,
-    encode_buf: String,
+fn encode<'a>(encode_buf: &mut String, writer: &'a mut EmailWriter) {
+    if encode_buf.is_empty() {
+        // nothing to encode
+        return;
+    }
+
+    let prefix = encode_buf.trim_end_matches(' ');
+    email_encoding::headers::rfc2047::encode(prefix, writer).expect("we can always write to a string");
+
+    // TODO: add a better API for doing this in email-encoding
+    let spaces = encode_buf.len() - prefix.len();
+    for _ in 0..spaces {
+        writer.space();
+    }
+
+    encode_buf.clear();
 }
 
-impl<'a> HeaderValueEncoder<'a> {
-    fn encode(name: &str, value: &'a str, f: &'a mut impl fmt::Write) -> fmt::Result {
-        let encoder = Self::new(name, f);
-        encoder.format(value.split_inclusive(' '))
-    }
+fn encode_header_value(key: &str, value: &str) -> String {
+    let mut encoded_value = String::new();
+    let line_len = key.len() + ": ".len();
+    let mut writer = EmailWriter::new(&mut encoded_value, line_len, 0, false);
+    let mut encode_buf = String::new();
+    for next_word in value.split_inclusive(' ') {
+        let allowed = allowed_str(next_word);
 
-    fn new(name: &str, writer: &'a mut dyn Write) -> Self {
-        let line_len = name.len() + ": ".len();
-        let writer = EmailWriter::new(writer, line_len, 0, false, false);
+        if allowed {
+            // This word only contains allowed characters
 
-        Self {
-            writer,
-            encode_buf: String::new(),
+            // the next word is allowed, but we may have accumulated some words to encode
+            encode(&mut encode_buf, &mut writer);
+
+            writer.folding().write_str(next_word).expect("we can always write to a string");
+        } else {
+            // This word contains unallowed characters
+            encode_buf.push_str(next_word);
         }
     }
-
-    fn format(mut self, words_iter: impl Iterator<Item = &'a str>) -> fmt::Result {
-        for next_word in words_iter {
-            let allowed = allowed_str(next_word);
-
-            if allowed {
-                // This word only contains allowed characters
-
-                // the next word is allowed, but we may have accumulated some words to encode
-                self.flush_encode_buf()?;
-
-                self.writer.folding().write_str(next_word)?;
-            } else {
-                // This word contains unallowed characters
-                self.encode_buf.push_str(next_word);
-            }
-        }
-
-        self.flush_encode_buf()?;
-
-        Ok(())
-    }
-
-    fn flush_encode_buf(&mut self) -> fmt::Result {
-        if self.encode_buf.is_empty() {
-            // nothing to encode
-            return Ok(());
-        }
-
-        let prefix = self.encode_buf.trim_end_matches(' ');
-        email_encoding::headers::rfc2047::encode(prefix, &mut self.writer)?;
-
-        let spaces = self.encode_buf.len() - prefix.len();
-        for _ in 0..spaces {
-            self.writer.space();
-        }
-
-        self.encode_buf.clear();
-        Ok(())
-    }
-}
-
-fn encode_header_value(key: &str, value: &str, encoded_value: &mut String) {
-    HeaderValueEncoder::encode(key, value, encoded_value).unwrap();
+    encode(&mut encode_buf, &mut writer);
+    drop(writer);
+    encoded_value
 }
 
 pub trait Header<'a>: Clone + Display {
@@ -132,8 +109,7 @@ pub trait Header<'a>: Clone + Display {
     fn set_value<V: ToString>(&mut self, value: V) {
         let value = value.to_string();
         assert!(!value.is_empty());
-        let mut encoded_value = String::new();
-        encode_header_value(&self.get_key(), &value, &mut encoded_value);
+        let encoded_value = encode_header_value(&self.get_key(), &value);
         self.set_value_raw(encoded_value.into_bytes());
     }
 
@@ -174,8 +150,7 @@ impl<T: ToString> Display for RFC2045HeaderValue<T> {
                     .iter()
                     .map(|(key, value)| {
                         let key = key.to_string();
-                        let mut encoded_value = String::new();
-                        encode_header_value(&key, &value.to_string(), &mut encoded_value);
+                        let encoded_value = encode_header_value(&key, &value.to_string());
                         format!("{key}=\"{encoded_value}\"")
                     })
                     .collect::<Vec<_>>();
@@ -211,8 +186,7 @@ impl<'a> Header<'a> for CowHeader<'a> {
         let value = value.to_string();
         assert!(!key.is_empty());
         assert!(!value.is_empty());
-        let mut encoded_value = String::new();
-        encode_header_value(&key, &value, &mut encoded_value);
+        let encoded_value = encode_header_value(&key, &value);
 
         let mut key_bytes = key.into_bytes();
         let mut value_bytes = encoded_value.into_bytes();
