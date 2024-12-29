@@ -22,7 +22,7 @@ fn encode<'a>(encode_buf: &mut String, writer: &'a mut EmailWriter) {
     }
 
     let prefix = encode_buf.trim_end_matches(' ');
-    email_encoding::headers::rfc2047::encode(prefix, writer).expect("we can always write to a string");
+    email_encoding::headers::rfc2047::encode(prefix, writer).expect("String is always writable");
 
     // TODO: add a better API for doing this in email-encoding
     let spaces = encode_buf.len() - prefix.len();
@@ -39,15 +39,13 @@ fn encode_header_value(key: &str, value: &str) -> String {
     let mut writer = EmailWriter::new(&mut encoded_value, line_len, 0, false);
     let mut encode_buf = String::new();
     for next_word in value.split_inclusive(' ') {
-        let allowed = allowed_str(next_word);
-
-        if allowed {
+        if allowed_str(next_word) {
             // This word only contains allowed characters
 
             // the next word is allowed, but we may have accumulated some words to encode
             encode(&mut encode_buf, &mut writer);
 
-            writer.folding().write_str(next_word).expect("we can always write to a string");
+            writer.folding().write_str(next_word).expect("String is always writable");
         } else {
             // This word contains unallowed characters
             encode_buf.push_str(next_word);
