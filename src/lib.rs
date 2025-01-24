@@ -743,14 +743,14 @@ impl std::io::Read for CowMailReader<'_> {
     }
 }
 
-pub fn parse_mail<'a, H: Header<'a> + 'a>(raw_data: &'a [u8]) -> Result<CowMail<H>, &'static str> {
+pub fn parse_mail<'a, H: Header<'a> + 'a>(raw_data: &'a [u8]) -> Result<CowMail<'a, H>, &'static str> {
     parse_mail_recursive(raw_data, false)
 }
 
 fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
     raw_data: &'a [u8],
     in_multipart_digest: bool,
-) -> Result<CowMail<H>, &'static str> {
+) -> Result<CowMail<'a, H>, &'static str> {
     let (headers, body_idx) = parse_headers::<H>(raw_data)?;
 
     let default_ctype = ContentType::default_conditional(in_multipart_digest);
