@@ -14,7 +14,7 @@ use mailparse::{
     ParsedContentDisposition, ParsedContentType,
 };
 use mediatype::{names::*, MediaType, MediaTypeBuf, Name};
-use rand::{distributions::Alphanumeric, thread_rng, Rng as _};
+use rand::{distr::Alphanumeric, rng, Rng as _};
 use std::borrow::Cow;
 use std::boxed::Box;
 use std::ops::Deref;
@@ -195,7 +195,7 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
 
 
 pub fn generate_boundary() -> String {
-    thread_rng()
+    rng()
         .sample_iter(&Alphanumeric)
         .take(68)
         .map(char::from)
