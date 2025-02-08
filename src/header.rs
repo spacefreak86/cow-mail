@@ -178,6 +178,15 @@ pub struct CowHeader<'a> {
     value_end: usize,
 }
 
+impl CowHeader<'_> {
+    pub fn is_owned(&self) -> bool {
+        match self.raw_bytes {
+            Cow::Owned(_) => true,
+            Cow::Borrowed(_) => false,
+        }
+    }
+}
+
 impl<'a> Header<'a> for CowHeader<'a> {
     fn new<K: ToString, V: ToString>(key: K, value: V) -> Self {
         let key = key.to_string();
