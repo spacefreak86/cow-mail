@@ -188,11 +188,7 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     fn get_content_encoded<'b>(&'b self, ctype: &'b ContentType, transfer_encoding: &Option<String>) -> Body<'b> {
         Body::new(self.raw_body(), ctype, transfer_encoding)
     }
-
 }
-
-
-
 
 pub fn generate_boundary() -> String {
     rng()
@@ -204,6 +200,8 @@ pub fn generate_boundary() -> String {
 
 #[derive(Debug, Clone)]
 pub struct CowMail<'a, H: Header<'a>> {
+    pub bytes_orig: &'a [u8],
+    pub header_bytes_orig: &'a [u8],
     pub headers: Vec<H>,
     pub body_bytes: Cow<'a, [u8]>,
     pub subparts: Vec<CowMail<'a, H>>,
@@ -220,6 +218,8 @@ impl<'a> Default for CowMail<'a, CowHeader<'a>> {
 impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     pub fn new() -> Self {
         Self {
+            bytes_orig: &[],
+            header_bytes_orig: &[],
             headers: Vec::new(),
             body_bytes: Cow::Borrowed(&[]),
             subparts: Vec::new(),
@@ -680,7 +680,6 @@ impl<'a, H: Header<'a> + 'a> Mail<'a, H> for CowMail<'a, H> {
     }
 }
 
-
 impl<'a> TryFrom<&'a [u8]> for CowMail<'a, CowHeader<'a>> {
     type Error = &'static str;
 
@@ -761,6 +760,8 @@ fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
         .unwrap_or(default_ctype.clone());
 
     let mut mail = CowMail {
+        bytes_orig: raw_data,
+        header_bytes_orig: &raw_data[0..body_idx],
         headers,
         body_bytes: Cow::Borrowed(&raw_data[body_idx..]),
         subparts: Vec::new(),
@@ -840,7 +841,7 @@ fn find_from_u8(line: &[u8], ix_start: usize, key: &[u8]) -> Option<usize> {
 mod tests {
     //use std::io::{Read, Write};
 
-    use crate::{CowHeader, CowMail, Mail, Header, HeaderMap};
+    use crate::{CowHeader, CowMail, Header, HeaderMap, Mail};
     use mediatype::{names::*, MediaType};
 
     #[test]
@@ -867,7 +868,10 @@ mod tests {
         }
 
         mail.insert_header("X-Test", "Test1", 1);
-        assert_eq!(mail.iter_values("X-Test").collect::<Vec<_>>(), ["Test", "Test1", "Test2", "Test3"]);
+        assert_eq!(
+            mail.iter_values("X-Test").collect::<Vec<_>>(),
+            ["Test", "Test1", "Test2", "Test3"]
+        );
 
         mail.replace_all_headers("X-Test", "Test555");
         assert_eq!(
@@ -879,10 +883,16 @@ mod tests {
         mail.replace_header("X-Test", "Test1", 1);
         mail.replace_header("X-Test", "Test2", 2);
         mail.replace_header("X-Test", "Test3", 3);
-        assert_eq!(mail.iter_values("X-Test").collect::<Vec<_>>(), ["Test", "Test1", "Test2", "Test3"]);
+        assert_eq!(
+            mail.iter_values("X-Test").collect::<Vec<_>>(),
+            ["Test", "Test1", "Test2", "Test3"]
+        );
 
         mail.remove_header("X-Test", 1);
-        assert_eq!(mail.iter_values("X-Test").collect::<Vec<_>>(), ["Test", "Test2", "Test3"]);
+        assert_eq!(
+            mail.iter_values("X-Test").collect::<Vec<_>>(),
+            ["Test", "Test2", "Test3"]
+        );
         mail.remove_all_headers("X-Test");
         assert_eq!(mail.headers.len(), 2);
     }
