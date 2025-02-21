@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+//#![forbid(unsafe_code)]
 
 pub mod header;
 pub mod headers;
@@ -17,6 +17,7 @@ use mediatype::{names::*, MediaType, MediaTypeBuf, Name};
 use rand::{distr::Alphanumeric, rng, Rng as _};
 use std::borrow::Cow;
 use std::boxed::Box;
+use std::collections::VecDeque;
 use std::ops::Deref;
 
 #[derive(Debug)]
@@ -44,15 +45,15 @@ impl From<MailParseError> for CowMailError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyType {
     RELATED,
     HTML,
     PLAIN,
 }
 
-impl From<&BodyType> for Name<'_> {
-    fn from(btype: &BodyType) -> Self {
+impl From<BodyType> for Name<'_> {
+    fn from(btype: BodyType) -> Self {
         match btype {
             BodyType::PLAIN => PLAIN,
             BodyType::HTML => HTML,
@@ -293,29 +294,25 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
 
     fn contains_body(&self, mime: &MediaTypeBuf, subty: &Name) -> Option<bool> {
         match self.is_multipart() {
-            false => Some(!self.is_attachment() && mime.ty() == TEXT && mime.subty().eq(subty)),
+            false => Some(!self.is_attachment() && mime.ty() == TEXT && mime.subty() == *subty),
             true if *subty == RELATED && mime.subty() == RELATED => Some(true),
             _ if self.subparts.is_empty() => Some(false),
             _ => None,
         }
     }
 
-    fn get_related_candidate(&self) -> usize {
-        self.content_type()
-            .params
-            .get("start")
-            .and_then(|start| {
-                self.subparts.iter().position(|part| {
-                    part.headers
-                        .find_value("Content-ID")
-                        .map(|cid| cid.eq(start))
-                        .unwrap_or(false)
-                })
+    fn get_related_candidate(&self) -> Option<usize> {
+        self.content_type().params.get("start").and_then(|start| {
+            self.subparts.iter().position(|part| {
+                part.headers
+                    .find_value("Content-ID")
+                    .map(|cid| cid.eq(start))
+                    .unwrap_or(false)
             })
-            .unwrap_or_default()
+        })
     }
 
-    pub fn get_body_part(&self, bodytype: &BodyType) -> Option<&'a CowMail<H>> {
+    pub fn get_body_part(&self, bodytype: BodyType) -> Option<&CowMail<'a, H>> {
         let subty = Name::from(bodytype);
         let mime = self.get_mime_type();
 
@@ -325,17 +322,17 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
                 false => None,
             },
             None => {
-                if mime.subty() != RELATED {
-                    self.subparts.iter().find_map(|p| p.get_body_part(bodytype))
-                } else {
-                    let candidate = self.get_related_candidate();
-                    self.subparts[candidate].get_body_part(bodytype)
+                if mime.subty() == RELATED {
+                    if let Some(candidate) = self.get_related_candidate() {
+                        return self.subparts[candidate].get_body_part(bodytype);
+                    }
                 }
+                self.subparts.iter().find_map(|p| p.get_body_part(bodytype))
             }
         }
     }
 
-    pub fn get_body_part_mut(&mut self, bodytype: &BodyType) -> Option<&mut CowMail<'a, H>> {
+    pub fn get_body_part_mut(&mut self, bodytype: BodyType) -> Option<&mut CowMail<'a, H>> {
         let subty = Name::from(bodytype);
         let mime = self.get_mime_type();
         match self.contains_body(&mime, &subty) {
@@ -344,12 +341,12 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
                 false => None,
             },
             None => {
-                if mime.subty() != RELATED {
-                    self.subparts.iter_mut().find_map(|p| p.get_body_part_mut(bodytype))
-                } else {
-                    let candidate = self.get_related_candidate();
-                    self.subparts[candidate].get_body_part_mut(bodytype)
+                if mime.subty() == RELATED {
+                    if let Some(candidate) = self.get_related_candidate() {
+                        return self.subparts[candidate].get_body_part_mut(bodytype);
+                    }
                 }
+                self.subparts.iter_mut().find_map(|p| p.get_body_part_mut(bodytype))
             }
         }
     }
@@ -454,6 +451,130 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
             subpart.headers.add_header("Content-Disposition", "attachment");
         }
         self.add_multipart(subpart, MediaType::new(MULTIPART, MIXED))
+    }
+
+    fn contains_plain_or_html_body(&self, mime: &MediaTypeBuf) -> Option<bool> {
+        match self.is_multipart() {
+            false => Some(
+                !self.is_attachment()
+                    && mime.ty() == TEXT
+                    && (mime.subty() == Name::from(BodyType::PLAIN) || mime.subty() == Name::from(BodyType::HTML)),
+            ),
+            true if self.subparts.is_empty() => Some(false),
+            true => None,
+        }
+    }
+
+    fn get_body_parent_part_mut(&mut self) -> Option<&mut CowMail<'a, H>> {
+        let mime = self.get_mime_type();
+
+        if let Some(res) = self.contains_plain_or_html_body(&mime) {
+            return match res {
+                false => None,
+                true => Some(self),
+            };
+        }
+
+        let mut stack = VecDeque::new();
+        stack.push_back(self as *mut CowMail<H>);
+
+        while let Some(current_ptr) = stack.pop_front() {
+            let current = unsafe { &mut *current_ptr };
+
+            if current.get_mime_type().subty() == RELATED {
+                if let Some(candidate) = current.get_related_candidate() {
+                    match current.subparts[candidate].contains_plain_or_html_body(&mime) {
+                        Some(true) => return Some(current),
+                        Some(false) => return None,
+                        None => {
+                            stack.clear();
+                            stack.push_back(&mut current.subparts[candidate])
+                        }
+                    }
+                    continue;
+                }
+            }
+            for p in current.subparts.iter_mut() {
+                match p.contains_plain_or_html_body(&mime) {
+                    Some(true) => return Some(current),
+                    Some(false) => continue,
+                    None => stack.push_back(p),
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn set_text_body<T: ToString>(&mut self, text: T) -> Result<(), CowMailError> {
+        if let Some(parent) = self.get_body_parent_part_mut() {
+            match parent.get_body_part_mut(BodyType::PLAIN) {
+                Some(part) => part.set_content(text, None),
+                None => {
+                    let mut text_part = Self::new();
+                    text_part.set_content(text, None);
+                    if parent.get_mime_type().subty() == ALTERNATIVE {
+                        parent.subparts.insert(0, text_part);
+                    } else {
+                        let html_part = parent
+                            .get_body_part_mut(BodyType::HTML)
+                            .ok_or(CowMailError::Generic("get_body_parent_part_mut returned a parent without a plain or html body, this should never happen!".into()))?;
+                        html_part.make_alternative(None)?;
+                        html_part.subparts.insert(0, text_part);
+                    }
+                }
+            }
+
+            return Ok(());
+        }
+
+        if !self.is_multipart() {
+            self.make_mixed(None)?;
+        }
+
+        let mut text_part = Self::new();
+        text_part.set_content(text, None);
+        self.subparts.insert(0, text_part);
+
+        Ok(())
+    }
+
+    pub fn set_html_body<T: ToString>(&mut self, html: T) -> Result<(), CowMailError> {
+        if let Some(parent) = self.get_body_parent_part_mut() {
+            match parent.get_body_part_mut(BodyType::HTML) {
+                Some(part) => part.set_content(html, Some(MediaType::new(TEXT, HTML))),
+                None => {
+                    let mut html_part = Self::new();
+                    html_part.set_content(html, Some(MediaType::new(TEXT, HTML)));
+                    if parent.get_mime_type().subty() == ALTERNATIVE {
+                        parent.subparts.push(html_part);
+                    } else {
+                        let text_part = parent
+                            .get_body_part_mut(BodyType::PLAIN)
+                            .ok_or(CowMailError::Generic("get_body_parent_part_mut returned a parent without a plain or html body, this should never happen!".into()))?;
+                        text_part.make_alternative(None)?;
+                        text_part.subparts.push(html_part);
+                    }
+                }
+            }
+
+            return Ok(());
+        }
+
+        if !self.is_multipart() {
+            self.make_mixed(None)?;
+        }
+
+        let mut html_part = Self::new();
+        html_part.set_content(html, Some(MediaType::new(TEXT, HTML)));
+        self.subparts.insert(0, html_part);
+
+        Ok(())
+    }
+
+    pub fn set_body<T: ToString>(&mut self, text: T, html: T) -> Result<(), CowMailError> {
+        self.set_text_body(text)?;
+        self.set_html_body(html)
     }
 
     pub fn serialize_headers(&self) -> Vec<Cow<[u8]>> {
