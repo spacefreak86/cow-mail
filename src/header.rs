@@ -15,7 +15,7 @@ const fn allowed_char(c: u8) -> bool {
     c >= 1 && c <= 9 || c == 11 || c == 12 || c >= 14 && c <= 127
 }
 
-fn encode<'a>(encode_buf: &mut String, writer: &'a mut EmailWriter) {
+fn encode(encode_buf: &mut String, writer: &mut EmailWriter) {
     if encode_buf.is_empty() {
         // nothing to encode
         return;

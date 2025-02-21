@@ -13,7 +13,8 @@ use mailparse::{
     body::Body, parse_content_disposition, parse_content_type, DispositionType, MailParseError,
     ParsedContentDisposition, ParsedContentType,
 };
-use mediatype::{names::*, MediaType, MediaTypeBuf, Name};
+pub use mediatype::{names, values, MediaType};
+use mediatype::{names::*, values::UTF_8, MediaTypeBuf, Name, ReadParams, WriteParams};
 use rand::{distr::Alphanumeric, rng, Rng as _};
 use std::borrow::Cow;
 use std::boxed::Box;
@@ -47,7 +48,6 @@ impl From<MailParseError> for CowMailError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyType {
-    RELATED,
     HTML,
     PLAIN,
 }
@@ -57,7 +57,6 @@ impl From<BodyType> for Name<'_> {
         match btype {
             BodyType::PLAIN => PLAIN,
             BodyType::HTML => HTML,
-            BodyType::RELATED => RELATED,
         }
     }
 }
@@ -238,15 +237,16 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
 
     pub fn set_content<T: ToString>(&mut self, content: T, ctype: Option<MediaType>) {
         self.clear_content();
-        let body = lettre::message::Body::new(content.to_string());
+        let content = content.to_string();
 
-        let ctype = ctype
-            .unwrap_or_else(|| MediaType::new(TEXT, PLAIN))
-            .essence()
-            .to_string();
-        self.headers
-            .add_header("Content-Type", format!("{}; charset=\"UTF-8\"", ctype));
+        let mut ctype = ctype.unwrap_or(MediaType::new(TEXT, PLAIN));
+        if !content.is_ascii() && ctype.get_param(CHARSET).is_none() {
+            ctype.set_param(CHARSET, UTF_8);
+        }
 
+        self.headers.add_header("Content-Type", ctype);
+
+        let body = lettre::message::Body::new(content);
         let encoding = body.encoding();
         if encoding != ContentTransferEncoding::SevenBit {
             self.headers.add_header("Content-Transfer-Encoding", encoding);
@@ -255,7 +255,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         self.body_bytes = Cow::Owned(body.into_vec());
     }
 
-    pub fn set_content_raw<B: Into<MaybeString>, T: ToString>(&mut self, content: B, ctype: Option<T>) {
+    pub fn set_content_raw<B: Into<MaybeString>>(&mut self, content: B, ctype: Option<MediaType>) {
         self.clear_content();
         let body = lettre::message::Body::new(content);
 
@@ -292,10 +292,9 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         Ok(())
     }
 
-    fn contains_body(&self, mime: &MediaTypeBuf, subty: &Name) -> Option<bool> {
+    fn contains_body(&self, mime: MediaType, bodytype: BodyType) -> Option<bool> {
         match self.is_multipart() {
-            false => Some(!self.is_attachment() && mime.ty() == TEXT && mime.subty() == *subty),
-            true if *subty == RELATED && mime.subty() == RELATED => Some(true),
+            false => Some(!self.is_attachment() && mime.ty == TEXT && mime.subty == Name::from(bodytype)),
             _ if self.subparts.is_empty() => Some(false),
             _ => None,
         }
@@ -313,10 +312,9 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     pub fn get_body_part(&self, bodytype: BodyType) -> Option<&CowMail<'a, H>> {
-        let subty = Name::from(bodytype);
         let mime = self.get_mime_type();
 
-        match self.contains_body(&mime, &subty) {
+        match self.contains_body(mime.essence(), bodytype) {
             Some(res) => match res {
                 true => Some(self),
                 false => None,
@@ -333,9 +331,8 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     pub fn get_body_part_mut(&mut self, bodytype: BodyType) -> Option<&mut CowMail<'a, H>> {
-        let subty = Name::from(bodytype);
         let mime = self.get_mime_type();
-        match self.contains_body(&mime, &subty) {
+        match self.contains_body(mime.essence(), bodytype) {
             Some(res) => match res {
                 true => Some(self),
                 false => None,
@@ -455,11 +452,9 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
 
     fn contains_plain_or_html_body(&self, mime: &MediaTypeBuf) -> Option<bool> {
         match self.is_multipart() {
-            false => Some(
-                !self.is_attachment()
-                    && mime.ty() == TEXT
-                    && (mime.subty() == Name::from(BodyType::PLAIN) || mime.subty() == Name::from(BodyType::HTML)),
-            ),
+            false => {
+                Some(!self.is_attachment() && mime.ty() == TEXT && (mime.subty() == PLAIN || mime.subty() == HTML))
+            }
             true if self.subparts.is_empty() => Some(false),
             true => None,
         }
@@ -890,7 +885,7 @@ fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
         default_ctype,
     };
 
-    if ctype.mimetype.starts_with("multipart/") && ctype.params.get("boundary").is_some() && raw_data.len() > body_idx {
+    if ctype.mimetype.starts_with("multipart/") && ctype.params.contains_key("boundary") && raw_data.len() > body_idx {
         let in_multipart_digest = ctype.mimetype == "multipart/digest";
         let boundary = String::from("--") + &ctype.params["boundary"];
         if let Some(body_end_idx) = find_from_u8_line_prefix(raw_data, body_idx, boundary.as_bytes()) {
@@ -961,9 +956,7 @@ fn find_from_u8(line: &[u8], ix_start: usize, key: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     //use std::io::{Read, Write};
-
-    use crate::{CowHeader, CowMail, Header, HeaderMap, Mail};
-    use mediatype::{names::*, MediaType};
+    use crate::{names::HTML, names::TEXT, CowHeader, CowMail, Header, HeaderMap, Mail, MediaType};
 
     #[test]
     fn test_header_mutations() {
@@ -1032,11 +1025,17 @@ mod tests {
         mail.clear_content();
         assert!(mail.find_header("Content-Type").is_none());
         assert_eq!(mail.get_content().unwrap(), "");
-        mail.set_content("This is a new test message\n".to_string(), None);
-
+        mail.set_content("This is a new test message ❤\n".to_string(), None);
         let ctype = mail.content_type();
         assert_eq!(ctype.mimetype, "text/plain");
         assert_eq!(ctype.charset, "UTF-8");
+
+        mail.clear_content();
+        assert_eq!(mail.get_content().unwrap(), "");
+        mail.set_content("This is a new test message\n".to_string(), None);
+        let ctype = mail.content_type();
+        assert_eq!(ctype.mimetype, "text/plain");
+        assert_eq!(ctype.charset, "us-ascii");
 
         mail.add_header("From", "\"John Doe\" <john.doe@example.com>");
 
@@ -1081,18 +1080,18 @@ mod tests {
              Content-Type: multipart/alternative;\r\n boundary=\"{alt_boundary}\"\r\n\
              \r\n\
              --{alt_boundary}\r\n\
-             Content-Type: text/plain; charset=\"UTF-8\"\r\n\
+             Content-Type: text/plain\r\n\
              \r\n\
              This is a new test message\r\n\
              \r\n\
              --{alt_boundary}\r\n\
-             Content-Type: text/html; charset=\"UTF-8\"\r\n\
+             Content-Type: text/html; charset=UTF-8\r\n\
              Content-Transfer-Encoding: quoted-printable\r\n\
              \r\n\
              <html><body>This is a new test message =E2=98=BA</body></html>\r\n\
              --{alt_boundary}--\r\n\
              --{mixed_boundary}\r\n\
-             Content-Type: text/plain; charset=\"UTF-8\"\r\n\
+             Content-Type: text/plain\r\n\
              Content-Disposition: attachment;\r\n filename=\"=?utf-8?b?VGVzdOKYukZpbGUuaHRtbA==?=\"\r\n\
              \r\n\
              This is a test text file\r\n\
