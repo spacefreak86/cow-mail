@@ -868,6 +868,16 @@ fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
 ) -> Result<CowMail<'a, H>, &'static str> {
     let (headers, body_idx) = parse_headers::<H>(raw_data)?;
 
+    let mut body_end_idx = raw_data.len();
+    let mut end_bytes: &[u8] = &[];
+
+    if body_idx + 2 < raw_data.len() {
+        if &raw_data[(raw_data.len() - 2)..] == b"\r\n" {
+            body_end_idx = raw_data.len() - 2;
+            end_bytes = b"\r\n";
+        }
+    }
+
     let default_ctype = ContentType::default_conditional(in_multipart_digest);
 
     let ctype = headers
@@ -879,9 +889,9 @@ fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
         bytes_orig: raw_data,
         header_bytes_orig: &raw_data[0..body_idx],
         headers,
-        body_bytes: Cow::Borrowed(&raw_data[body_idx..]),
+        body_bytes: Cow::Borrowed(&raw_data[body_idx..body_end_idx]),
         subparts: Vec::new(),
-        end_bytes: &[],
+        end_bytes,
         default_ctype,
     };
 
