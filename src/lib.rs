@@ -501,13 +501,13 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         None
     }
 
-    pub fn set_text_body<T: ToString>(&mut self, text: T) -> Result<(), CowMailError> {
+    pub fn set_text_body<T: ToString>(&mut self, content: T) -> Result<(), CowMailError> {
         if let Some(parent) = self.get_body_parent_part_mut() {
             match parent.get_body_part_mut(BodyType::PLAIN) {
-                Some(part) => part.set_content(text, None),
+                Some(part) => part.set_content(content, None),
                 None => {
                     let mut text_part = Self::new();
-                    text_part.set_content(text, None);
+                    text_part.set_content(content, None);
                     if parent.get_mime_type().subty() == ALTERNATIVE {
                         parent.subparts.insert(0, text_part);
                     } else {
@@ -528,19 +528,19 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
 
         let mut text_part = Self::new();
-        text_part.set_content(text, None);
+        text_part.set_content(content, None);
         self.subparts.insert(0, text_part);
 
         Ok(())
     }
 
-    pub fn set_html_body<T: ToString>(&mut self, html: T) -> Result<(), CowMailError> {
+    pub fn set_html_body<T: ToString>(&mut self, content: T) -> Result<(), CowMailError> {
         if let Some(parent) = self.get_body_parent_part_mut() {
             match parent.get_body_part_mut(BodyType::HTML) {
-                Some(part) => part.set_content(html, Some(MediaType::new(TEXT, HTML))),
+                Some(part) => part.set_content(content, Some(MediaType::new(TEXT, HTML))),
                 None => {
                     let mut html_part = Self::new();
-                    html_part.set_content(html, Some(MediaType::new(TEXT, HTML)));
+                    html_part.set_content(content, Some(MediaType::new(TEXT, HTML)));
                     if parent.get_mime_type().subty() == ALTERNATIVE {
                         parent.subparts.push(html_part);
                     } else {
@@ -561,7 +561,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
 
         let mut html_part = Self::new();
-        html_part.set_content(html, Some(MediaType::new(TEXT, HTML)));
+        html_part.set_content(content, Some(MediaType::new(TEXT, HTML)));
         self.subparts.insert(0, html_part);
 
         Ok(())
