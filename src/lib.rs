@@ -168,7 +168,7 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     fn get_content(&self) -> Result<String, CowMailError> {
         let ctype = self.content_type();
         let transfer_encoding = self.find_value("Content-Transfer-Encoding");
-        match self.get_content_encoded(&ctype, &transfer_encoding) {
+        match Body::new(self.raw_body(), &ctype, &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded_as_string()?),
             Body::SevenBit(body) | Body::EightBit(body) => Ok(body.get_as_string()?),
             Body::Binary(body) => Ok(body.get_as_string()?),
@@ -178,15 +178,11 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     fn get_content_raw(&self) -> Result<Vec<u8>, CowMailError> {
         let ctype = self.content_type();
         let transfer_encoding = self.find_value("Content-Transfer-Encoding");
-        match self.get_content_encoded(&ctype, &transfer_encoding) {
+        match Body::new(self.raw_body(), &ctype, &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded()?),
-            Body::SevenBit(body) | Body::EightBit(body) => Ok(Vec::<u8>::from(body.get_raw())),
+            Body::SevenBit(body) | Body::EightBit(body) => Ok(Vec::from(body.get_raw())),
             Body::Binary(body) => Ok(Vec::from(body.get_raw())),
         }
-    }
-
-    fn get_content_encoded<'b>(&'b self, ctype: &'b ContentType, transfer_encoding: &Option<String>) -> Body<'b> {
-        Body::new(self.raw_body(), ctype, transfer_encoding)
     }
 }
 
@@ -204,6 +200,7 @@ pub struct CowMail<'a, H: Header<'a>> {
     pub header_bytes_orig: &'a [u8],
     pub headers: Vec<H>,
     pub body_bytes: Cow<'a, [u8]>,
+    pub body_bytes_orig: &'a [u8],
     pub subparts: Vec<CowMail<'a, H>>,
     pub end_bytes: &'a [u8],
     pub default_ctype: ContentType,
@@ -222,6 +219,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
             header_bytes_orig: &[],
             headers: Vec::new(),
             body_bytes: Cow::Borrowed(&[]),
+            body_bytes_orig: &[],
             subparts: Vec::new(),
             end_bytes: b"\r\n",
             default_ctype: ContentType::default(),
@@ -453,7 +451,8 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     fn contains_plain_or_html_body(&self, mime: &MediaTypeBuf) -> Option<bool> {
         match self.is_multipart() {
             false => {
-                Some(!self.is_attachment() && mime.ty() == TEXT && (mime.subty() == PLAIN || mime.subty() == HTML))
+                let subty = mime.subty();
+                Some(!self.is_attachment() && mime.ty() == TEXT && (subty == PLAIN || subty == HTML))
             }
             true if self.subparts.is_empty() => Some(false),
             true => None,
@@ -890,6 +889,7 @@ fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
         header_bytes_orig: &raw_data[0..body_idx],
         headers,
         body_bytes: Cow::Borrowed(&raw_data[body_idx..body_end_idx]),
+        body_bytes_orig: &raw_data[body_idx..body_end_idx],
         subparts: Vec::new(),
         end_bytes,
         default_ctype,
