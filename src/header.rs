@@ -62,9 +62,9 @@ pub trait Header<'a>: Clone + Display {
     fn get_key_raw(&self) -> &[u8];
     fn get_value_raw(&self) -> &[u8];
     fn set_value_raw(&mut self, value: Vec<u8>);
-    fn serialize(&self) -> Vec<Cow<[u8]>>;
+    fn serialize(&self) -> Vec<Cow<'_, [u8]>>;
 
-    fn get_key(&self) -> Cow<str> {
+    fn get_key(&self) -> Cow<'_, str> {
         decode_latin1(self.get_key_raw())
     }
 
@@ -72,7 +72,7 @@ pub trait Header<'a>: Clone + Display {
         self.get_key().eq_ignore_ascii_case(key)
     }
 
-    fn get_value_ref(&self) -> Cow<str> {
+    fn get_value_ref(&self) -> Cow<'_, str> {
         // RFC 6532 says that header values can be UTF-8. Let's try that first, and
         // fall back to latin1 if that fails
         let value = self.get_value_raw();
@@ -241,7 +241,7 @@ impl<'a> Header<'a> for CowHeader<'a> {
         raw_bytes.extend(b"\r\n");
     }
 
-    fn serialize(&self) -> Vec<Cow<[u8]>> {
+    fn serialize(&self) -> Vec<Cow<'_, [u8]>> {
         vec![Cow::Borrowed(&self.raw_bytes)]
     }
 }

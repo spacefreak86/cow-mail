@@ -346,19 +346,12 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
     }
 
-    fn make_multipart(&mut self, to_type: Name, boundary: Option<String>) -> Result<(), CowMailError> {
+    fn make_multipart(&mut self, to_type: Name, boundary: Option<String>) {
         let ctype = self.get_mime_type();
         if ctype.ty() == MULTIPART {
             let subtype = ctype.subty();
-            if subtype == to_type
-                || (to_type == ALTERNATIVE && subtype == MIXED)
-                || (to_type == RELATED && [ALTERNATIVE, MIXED].contains(&subtype))
-            {
-                return Err(CowMailError::Generic(format!(
-                    "cannot convert {} to multipart/{}",
-                    ctype.essence(),
-                    to_type
-                )));
+            if subtype == to_type {
+                return;
             }
         }
 
@@ -396,52 +389,50 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         );
 
         self.subparts.push(subpart);
-        Ok(())
     }
 
-    pub fn make_mixed(&mut self, boundary: Option<String>) -> Result<(), CowMailError> {
+    pub fn make_mixed(&mut self, boundary: Option<String>) {
         self.make_multipart(MIXED, boundary)
     }
 
-    pub fn make_alternative(&mut self, boundary: Option<String>) -> Result<(), CowMailError> {
+    pub fn make_alternative(&mut self, boundary: Option<String>) {
         self.make_multipart(ALTERNATIVE, boundary)
     }
 
-    pub fn make_related(&mut self, boundary: Option<String>) -> Result<(), CowMailError> {
+    pub fn make_related(&mut self, boundary: Option<String>) {
         self.make_multipart(RELATED, boundary)
     }
 
-    fn add_multipart(&mut self, subpart: CowMail<'a, H>, ctype: MediaType) -> Result<(), CowMailError> {
+    fn add_multipart(&mut self, subpart: CowMail<'a, H>, ctype: MediaType) {
         match self.is_multipart() {
             false => {
-                self.make_multipart(ctype.subty, None)?;
+                self.make_multipart(ctype.subty, None);
                 self.subparts.push(subpart);
             }
             true => {
                 let existing_ctype = self.get_mime_type();
                 if existing_ctype.ty() == MULTIPART && existing_ctype != ctype {
-                    self.make_multipart(ctype.subty, None)?;
+                    self.make_multipart(ctype.subty, None);
                     self.subparts.push(subpart);
                 } else {
                     self.subparts.push(subpart);
                 }
             }
         }
-        Ok(())
     }
 
-    pub fn add_related(&mut self, mut subpart: CowMail<'a, H>) -> Result<(), CowMailError> {
+    pub fn add_related(&mut self, mut subpart: CowMail<'a, H>) {
         if subpart.headers.find_header("Content-Disposition").is_none() {
             subpart.headers.add_header("Content-Disposition", "inline");
         }
         self.add_multipart(subpart, MediaType::new(MULTIPART, RELATED))
     }
 
-    pub fn add_alternative(&mut self, subpart: CowMail<'a, H>) -> Result<(), CowMailError> {
+    pub fn add_alternative(&mut self, subpart: CowMail<'a, H>) {
         self.add_multipart(subpart, MediaType::new(MULTIPART, ALTERNATIVE))
     }
 
-    pub fn add_attachment(&mut self, mut subpart: CowMail<'a, H>) -> Result<(), CowMailError> {
+    pub fn add_attachment(&mut self, mut subpart: CowMail<'a, H>) {
         if subpart.headers.find_header("Content-Disposition").is_none() {
             subpart.headers.add_header("Content-Disposition", "attachment");
         }
@@ -513,7 +504,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
                         let html_part = parent
                             .get_body_part_mut(BodyType::HTML)
                             .ok_or(CowMailError::Generic("get_body_parent_part_mut returned a parent without a plain or html body, this should never happen!".into()))?;
-                        html_part.make_alternative(None)?;
+                        html_part.make_alternative(None);
                         html_part.subparts.insert(0, text_part);
                     }
                 }
@@ -523,7 +514,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
 
         if !self.is_multipart() {
-            self.make_mixed(None)?;
+            self.make_mixed(None);
         }
 
         let mut text_part = Self::new();
@@ -546,7 +537,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
                         let text_part = parent
                             .get_body_part_mut(BodyType::PLAIN)
                             .ok_or(CowMailError::Generic("get_body_parent_part_mut returned a parent without a plain or html body, this should never happen!".into()))?;
-                        text_part.make_alternative(None)?;
+                        text_part.make_alternative(None);
                         text_part.subparts.push(html_part);
                     }
                 }
@@ -556,7 +547,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
 
         if !self.is_multipart() {
-            self.make_mixed(None)?;
+            self.make_mixed(None);
         }
 
         let mut html_part = Self::new();
@@ -571,13 +562,13 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         self.set_html_body(html)
     }
 
-    pub fn serialize_headers(&self) -> Vec<Cow<[u8]>> {
+    pub fn serialize_headers(&self) -> Vec<Cow<'_, [u8]>> {
         let mut res: Vec<Cow<[u8]>> = self.headers.iter().flat_map(|h| h.serialize()).collect();
         res.push(Cow::Borrowed(b"\r\n"));
         res
     }
 
-    pub fn serialize_body(&self) -> Vec<Cow<[u8]>> {
+    pub fn serialize_body(&self) -> Vec<Cow<'_, [u8]>> {
         match self.message_type() {
             MessageType::SinglePart => match self.body_bytes {
                 Cow::Borrowed(body_bytes) => vec![Cow::Borrowed(body_bytes)],
@@ -604,7 +595,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
     }
 
-    pub fn serialize(&self) -> Vec<Cow<[u8]>> {
+    pub fn serialize(&self) -> Vec<Cow<'_, [u8]>> {
         let mut res = self.serialize_headers();
         res.append(&mut self.serialize_body());
         res
@@ -1055,7 +1046,7 @@ mod tests {
             Some(MediaType::new(TEXT, HTML)),
         );
 
-        mail.add_alternative(html).unwrap();
+        mail.add_alternative(html);
         let alt_boundary = mail.get_boundary().unwrap();
 
         let ctype = mail.content_type();
@@ -1071,7 +1062,7 @@ mod tests {
         let mut disp = CowHeader::new("Content-Disposition", "attachment");
         disp.set_param("filename", "Test☺File.html");
         attachment.headers.push(disp);
-        mail.add_attachment(attachment).unwrap();
+        mail.add_attachment(attachment);
 
         let mixed_boundary = mail.get_boundary().unwrap();
         let encoded = mail
