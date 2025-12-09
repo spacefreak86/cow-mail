@@ -1,4 +1,4 @@
-//#![forbid(unsafe_code)]
+#![forbid(unsafe_code)]
 
 pub mod header;
 pub mod headers;
@@ -18,7 +18,6 @@ use mediatype::{names::*, values::UTF_8, MediaTypeBuf, Name, ReadParams, WritePa
 use rand::{distr::Alphanumeric, rng, Rng as _};
 use std::borrow::Cow;
 use std::boxed::Box;
-use std::collections::VecDeque;
 use std::ops::Deref;
 
 #[derive(Debug)]
@@ -194,6 +193,16 @@ pub fn generate_boundary() -> String {
         .collect::<String>()
 }
 
+/// Result of checking whether a MIME part is a text body (plain/html).
+enum BodyStatus {
+    /// This part is a text/plain or text/html body (not an attachment)
+    IsBody,
+    /// This is a leaf node but not a body (attachment, other content type, etc.)
+    NotBody,
+    /// This is a multipart container - subparts need to be checked
+    NeedsTraversal,
+}
+
 #[derive(Debug, Clone)]
 pub struct CowMail<'a, H: Header<'a>> {
     pub bytes_orig: &'a [u8],
@@ -290,11 +299,27 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         Ok(())
     }
 
-    fn contains_body(&self, mime: MediaType, bodytype: BodyType) -> Option<bool> {
+    /// Check if this MIME part is a text body (plain/html), not a body, or needs traversal.
+    fn body_status(&self, bodytype: Option<BodyType>) -> BodyStatus {
         match self.is_multipart() {
-            false => Some(!self.is_attachment() && mime.ty == TEXT && mime.subty == Name::from(bodytype)),
-            _ if self.subparts.is_empty() => Some(false),
-            _ => None,
+            true if self.subparts.is_empty() => BodyStatus::NotBody,
+            true => BodyStatus::NeedsTraversal,
+            false => {
+                let mime = self.get_mime_type();
+                if mime.ty() != TEXT || self.is_attachment() {
+                    return BodyStatus::NotBody;
+                }
+
+                let body_types = match bodytype {
+                    Some(bodytype) => vec![Name::from(bodytype)],
+                    None => vec![PLAIN, HTML],
+                };
+
+                match body_types.contains(&mime.subty()) {
+                    true => BodyStatus::IsBody,
+                    false => BodyStatus::NotBody,
+                }
+            }
         }
     }
 
@@ -310,15 +335,11 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     pub fn get_body_part(&self, bodytype: BodyType) -> Option<&CowMail<'a, H>> {
-        let mime = self.get_mime_type();
-
-        match self.contains_body(mime.essence(), bodytype) {
-            Some(res) => match res {
-                true => Some(self),
-                false => None,
-            },
-            None => {
-                if mime.subty() == RELATED {
+        match self.body_status(Some(bodytype)) {
+            BodyStatus::IsBody => Some(self),
+            BodyStatus::NotBody => None,
+            BodyStatus::NeedsTraversal => {
+                if self.get_mime_type().subty() == RELATED {
                     if let Some(candidate) = self.get_related_candidate() {
                         return self.subparts[candidate].get_body_part(bodytype);
                     }
@@ -329,14 +350,11 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     pub fn get_body_part_mut(&mut self, bodytype: BodyType) -> Option<&mut CowMail<'a, H>> {
-        let mime = self.get_mime_type();
-        match self.contains_body(mime.essence(), bodytype) {
-            Some(res) => match res {
-                true => Some(self),
-                false => None,
-            },
-            None => {
-                if mime.subty() == RELATED {
+        match self.body_status(Some(bodytype)) {
+            BodyStatus::IsBody => Some(self),
+            BodyStatus::NotBody => None,
+            BodyStatus::NeedsTraversal => {
+                if self.get_mime_type().subty() == RELATED {
                     if let Some(candidate) = self.get_related_candidate() {
                         return self.subparts[candidate].get_body_part_mut(bodytype);
                     }
@@ -439,56 +457,49 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         self.add_multipart(subpart, MediaType::new(MULTIPART, MIXED))
     }
 
-    fn contains_plain_or_html_body(&self, mime: &MediaTypeBuf) -> Option<bool> {
-        match self.is_multipart() {
-            false => {
-                let subty = mime.subty();
-                Some(!self.is_attachment() && mime.ty() == TEXT && (subty == PLAIN || subty == HTML))
-            }
-            true if self.subparts.is_empty() => Some(false),
-            true => None,
-        }
-    }
+    fn find_body_parent_path(&self, path: &mut Vec<usize>, bodytype: Option<BodyType>) -> Option<Vec<usize>> {
+        // For multipart/related, only check the start part (or first part if no start parameter)
+        let subpart_indices: Box<dyn Iterator<Item = usize>> = if self.get_mime_type().subty() == RELATED {
+            Box::new(self.get_related_candidate().into_iter())
+        } else {
+            Box::new(0..self.subparts.len())
+        };
 
-    fn get_body_parent_part_mut(&mut self) -> Option<&mut CowMail<'a, H>> {
-        let mime = self.get_mime_type();
-
-        if let Some(res) = self.contains_plain_or_html_body(&mime) {
-            return match res {
-                false => None,
-                true => Some(self),
-            };
-        }
-
-        let mut stack = VecDeque::new();
-        stack.push_back(self as *mut CowMail<H>);
-
-        while let Some(current_ptr) = stack.pop_front() {
-            let current = unsafe { &mut *current_ptr };
-
-            if current.get_mime_type().subty() == RELATED {
-                if let Some(candidate) = current.get_related_candidate() {
-                    match current.subparts[candidate].contains_plain_or_html_body(&mime) {
-                        Some(true) => return Some(current),
-                        Some(false) => return None,
+        for i in subpart_indices {
+            let subpart = &self.subparts[i];
+            match subpart.body_status(bodytype) {
+                BodyStatus::IsBody => return Some(path.clone()),
+                BodyStatus::NotBody => continue,
+                BodyStatus::NeedsTraversal => {
+                    path.push(i);
+                    match subpart.find_body_parent_path(path, bodytype) {
                         None => {
-                            stack.clear();
-                            stack.push_back(&mut current.subparts[candidate])
+                            path.pop();
                         }
+                        found => return found,
                     }
-                    continue;
-                }
-            }
-            for p in current.subparts.iter_mut() {
-                match p.contains_plain_or_html_body(&mime) {
-                    Some(true) => return Some(current),
-                    Some(false) => continue,
-                    None => stack.push_back(p),
                 }
             }
         }
 
         None
+    }
+
+    fn get_body_parent_part_mut(&mut self) -> Option<&mut CowMail<'a, H>> {
+        match self.body_status(None) {
+            BodyStatus::IsBody => Some(self),
+            BodyStatus::NotBody => None,
+            BodyStatus::NeedsTraversal => match self.find_body_parent_path(&mut Vec::new(), None) {
+                Some(path) => {
+                    let mut current = self;
+                    for idx in path {
+                        current = &mut current.subparts[idx];
+                    }
+                    Some(current)
+                }
+                None => None,
+            },
+        }
     }
 
     pub fn set_text_body<T: ToString>(&mut self, content: T) -> Result<(), CowMailError> {
@@ -861,11 +872,9 @@ fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
     let mut body_end_idx = raw_data.len();
     let mut end_bytes: &[u8] = &[];
 
-    if body_idx + 2 < raw_data.len() {
-        if &raw_data[(raw_data.len() - 2)..] == b"\r\n" {
-            body_end_idx = raw_data.len() - 2;
-            end_bytes = b"\r\n";
-        }
+    if body_idx + 2 < raw_data.len() && &raw_data[(raw_data.len() - 2)..] == b"\r\n" {
+        body_end_idx = raw_data.len() - 2;
+        end_bytes = b"\r\n";
     }
 
     let default_ctype = ContentType::default_conditional(in_multipart_digest);
