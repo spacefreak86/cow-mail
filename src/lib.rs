@@ -1,21 +1,22 @@
 #![forbid(unsafe_code)]
 
 pub mod header;
-pub mod headers;
-use header::CowHeader;
-pub use header::Header;
-use headers::parse_headers;
-pub use headers::HeaderMap;
 
-use lettre::message::header::ContentTransferEncoding;
+#[cfg(test)]
+mod tests;
+
+use header::CowHeader;
+pub use header::{Header, HeaderMap, parse_headers};
+
 use lettre::message::MaybeString;
+use lettre::message::header::ContentTransferEncoding;
 use mailparse::{
-    body::Body, parse_content_disposition, parse_content_type, DispositionType, MailParseError,
-    ParsedContentDisposition, ParsedContentType,
+    DispositionType, MailParseError, ParsedContentDisposition, ParsedContentType, body::Body,
+    parse_content_disposition, parse_content_type,
 };
-pub use mediatype::{names, values, MediaType};
-use mediatype::{names::*, values::UTF_8, MediaTypeBuf, Name, ReadParams, WriteParams};
-use rand::{distr::Alphanumeric, rng, Rng as _};
+pub use mediatype::{MediaType, names, values};
+use mediatype::{MediaTypeBuf, Name, ReadParams, WriteParams, names::*, values::UTF_8};
+use rand::{Rng as _, distr::Alphanumeric, rng};
 use std::borrow::Cow;
 use std::boxed::Box;
 use std::ops::Deref;
@@ -131,10 +132,10 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
         match ctype.mimetype.parse::<MediaTypeBuf>() {
             Ok(mtype) => {
                 let mut res = MessageType::SinglePart;
-                if mtype.ty() == MULTIPART {
-                    if let Some(boundary) = ctype.params.get("boundary") {
-                        res = MessageType::MultiPart(boundary.clone());
-                    }
+                if mtype.ty() == MULTIPART
+                    && let Some(boundary) = ctype.params.get("boundary")
+                {
+                    res = MessageType::MultiPart(boundary.clone());
                 }
                 res
             }
@@ -194,7 +195,7 @@ pub fn generate_boundary() -> String {
 }
 
 /// Result of checking whether a MIME part is a text body (plain/html).
-enum BodyStatus {
+enum BodyCheckStatus {
     /// This part is a text/plain or text/html body (not an attachment)
     IsBody,
     /// This is a leaf node but not a body (attachment, other content type, etc.)
@@ -300,14 +301,14 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     /// Check if this MIME part is a text body (plain/html), not a body, or needs traversal.
-    fn body_status(&self, bodytype: Option<BodyType>) -> BodyStatus {
+    fn check_body_status(&self, bodytype: Option<BodyType>) -> BodyCheckStatus {
         match self.is_multipart() {
-            true if self.subparts.is_empty() => BodyStatus::NotBody,
-            true => BodyStatus::NeedsTraversal,
+            true if self.subparts.is_empty() => BodyCheckStatus::NotBody,
+            true => BodyCheckStatus::NeedsTraversal,
             false => {
                 let mime = self.get_mime_type();
                 if mime.ty() != TEXT || self.is_attachment() {
-                    return BodyStatus::NotBody;
+                    return BodyCheckStatus::NotBody;
                 }
 
                 let body_types = match bodytype {
@@ -316,8 +317,8 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
                 };
 
                 match body_types.contains(&mime.subty()) {
-                    true => BodyStatus::IsBody,
-                    false => BodyStatus::NotBody,
+                    true => BodyCheckStatus::IsBody,
+                    false => BodyCheckStatus::NotBody,
                 }
             }
         }
@@ -335,14 +336,14 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     pub fn get_body_part(&self, bodytype: BodyType) -> Option<&CowMail<'a, H>> {
-        match self.body_status(Some(bodytype)) {
-            BodyStatus::IsBody => Some(self),
-            BodyStatus::NotBody => None,
-            BodyStatus::NeedsTraversal => {
-                if self.get_mime_type().subty() == RELATED {
-                    if let Some(candidate) = self.get_related_candidate() {
-                        return self.subparts[candidate].get_body_part(bodytype);
-                    }
+        match self.check_body_status(Some(bodytype)) {
+            BodyCheckStatus::IsBody => Some(self),
+            BodyCheckStatus::NotBody => None,
+            BodyCheckStatus::NeedsTraversal => {
+                if self.get_mime_type().subty() == RELATED
+                    && let Some(candidate) = self.get_related_candidate()
+                {
+                    return self.subparts[candidate].get_body_part(bodytype);
                 }
                 self.subparts.iter().find_map(|p| p.get_body_part(bodytype))
             }
@@ -350,14 +351,14 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     pub fn get_body_part_mut(&mut self, bodytype: BodyType) -> Option<&mut CowMail<'a, H>> {
-        match self.body_status(Some(bodytype)) {
-            BodyStatus::IsBody => Some(self),
-            BodyStatus::NotBody => None,
-            BodyStatus::NeedsTraversal => {
-                if self.get_mime_type().subty() == RELATED {
-                    if let Some(candidate) = self.get_related_candidate() {
-                        return self.subparts[candidate].get_body_part_mut(bodytype);
-                    }
+        match self.check_body_status(Some(bodytype)) {
+            BodyCheckStatus::IsBody => Some(self),
+            BodyCheckStatus::NotBody => None,
+            BodyCheckStatus::NeedsTraversal => {
+                if self.get_mime_type().subty() == RELATED
+                    && let Some(candidate) = self.get_related_candidate()
+                {
+                    return self.subparts[candidate].get_body_part_mut(bodytype);
                 }
                 self.subparts.iter_mut().find_map(|p| p.get_body_part_mut(bodytype))
             }
@@ -467,10 +468,10 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
 
         for i in subpart_indices {
             let subpart = &self.subparts[i];
-            match subpart.body_status(bodytype) {
-                BodyStatus::IsBody => return Some(path.clone()),
-                BodyStatus::NotBody => continue,
-                BodyStatus::NeedsTraversal => {
+            match subpart.check_body_status(bodytype) {
+                BodyCheckStatus::IsBody => return Some(path.clone()),
+                BodyCheckStatus::NotBody => continue,
+                BodyCheckStatus::NeedsTraversal => {
                     path.push(i);
                     match subpart.find_body_parent_path(path, bodytype) {
                         None => {
@@ -486,10 +487,10 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     fn get_body_parent_part_mut(&mut self) -> Option<&mut CowMail<'a, H>> {
-        match self.body_status(None) {
-            BodyStatus::IsBody => Some(self),
-            BodyStatus::NotBody => None,
-            BodyStatus::NeedsTraversal => match self.find_body_parent_path(&mut Vec::new(), None) {
+        match self.check_body_status(None) {
+            BodyCheckStatus::IsBody => Some(self),
+            BodyCheckStatus::NotBody => None,
+            BodyCheckStatus::NeedsTraversal => match self.find_body_parent_path(&mut Vec::new(), None) {
                 Some(path) => {
                     let mut current = self;
                     for idx in path {
@@ -502,25 +503,48 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
     }
 
-    pub fn set_text_body<T: ToString>(&mut self, content: T) -> Result<(), CowMailError> {
+    fn set_body_part<T: ToString>(&mut self, content: T, body_type: BodyType) -> Result<(), CowMailError> {
+        let ctype = match body_type {
+            BodyType::PLAIN => None,
+            BodyType::HTML => Some(MediaType::new(TEXT, HTML)),
+        };
+
         if let Some(parent) = self.get_body_parent_part_mut() {
-            match parent.get_body_part_mut(BodyType::PLAIN) {
-                Some(part) => part.set_content(content, None),
+            match parent.get_body_part_mut(body_type) {
+                Some(part) => part.set_content(content, ctype),
                 None => {
-                    let mut text_part = Self::new();
-                    text_part.set_content(content, None);
-                    if parent.get_mime_type().subty() == ALTERNATIVE {
-                        parent.subparts.insert(0, text_part);
+                    let mut new_part = Self::new();
+                    new_part.set_content(content, ctype);
+                    let parent_mime = parent.get_mime_type();
+                    let parent_subty = parent_mime.subty();
+                    if parent_subty == ALTERNATIVE {
+                        match body_type {
+                            BodyType::PLAIN => parent.subparts.insert(0, new_part),
+                            BodyType::HTML => parent.subparts.push(new_part),
+                        }
+                    } else if parent_subty == RELATED {
+                        parent.make_alternative(None);
+                        match body_type {
+                            BodyType::PLAIN => parent.subparts.insert(0, new_part),
+                            BodyType::HTML => parent.subparts.push(new_part),
+                        }
                     } else {
-                        let html_part = parent
-                            .get_body_part_mut(BodyType::HTML)
-                            .ok_or(CowMailError::Generic("get_body_parent_part_mut returned a parent without a plain or html body, this should never happen!".into()))?;
-                        html_part.make_alternative(None);
-                        html_part.subparts.insert(0, text_part);
+                        let other_type = match body_type {
+                            BodyType::PLAIN => BodyType::HTML,
+                            BodyType::HTML => BodyType::PLAIN,
+                        };
+
+                        let other_part = parent.get_body_part_mut(other_type).ok_or(CowMailError::Generic(
+                            "get_body_parent_part_mut returned a parent without a plain or html body".into(),
+                        ))?;
+                        other_part.make_alternative(None);
+                        match body_type {
+                            BodyType::PLAIN => other_part.subparts.insert(0, new_part),
+                            BodyType::HTML => other_part.subparts.push(new_part),
+                        }
                     }
                 }
             }
-
             return Ok(());
         }
 
@@ -528,44 +552,19 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
             self.make_mixed(None);
         }
 
-        let mut text_part = Self::new();
-        text_part.set_content(content, None);
-        self.subparts.insert(0, text_part);
+        let mut new_part = Self::new();
+        new_part.set_content(content, ctype);
+        self.subparts.insert(0, new_part);
 
         Ok(())
     }
 
+    pub fn set_text_body<T: ToString>(&mut self, content: T) -> Result<(), CowMailError> {
+        self.set_body_part(content, BodyType::PLAIN)
+    }
+
     pub fn set_html_body<T: ToString>(&mut self, content: T) -> Result<(), CowMailError> {
-        if let Some(parent) = self.get_body_parent_part_mut() {
-            match parent.get_body_part_mut(BodyType::HTML) {
-                Some(part) => part.set_content(content, Some(MediaType::new(TEXT, HTML))),
-                None => {
-                    let mut html_part = Self::new();
-                    html_part.set_content(content, Some(MediaType::new(TEXT, HTML)));
-                    if parent.get_mime_type().subty() == ALTERNATIVE {
-                        parent.subparts.push(html_part);
-                    } else {
-                        let text_part = parent
-                            .get_body_part_mut(BodyType::PLAIN)
-                            .ok_or(CowMailError::Generic("get_body_parent_part_mut returned a parent without a plain or html body, this should never happen!".into()))?;
-                        text_part.make_alternative(None);
-                        text_part.subparts.push(html_part);
-                    }
-                }
-            }
-
-            return Ok(());
-        }
-
-        if !self.is_multipart() {
-            self.make_mixed(None);
-        }
-
-        let mut html_part = Self::new();
-        html_part.set_content(content, Some(MediaType::new(TEXT, HTML)));
-        self.subparts.insert(0, html_part);
-
-        Ok(())
+        self.set_body_part(content, BodyType::HTML)
     }
 
     pub fn set_body<T: ToString>(&mut self, text: T, html: T) -> Result<(), CowMailError> {
@@ -924,19 +923,6 @@ fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
     Ok(mail)
 }
 
-// Like find_from_u8, but additionally filters such that `key` is at the start
-// of a line (preceded by `\n`) or at the start of the search space.
-fn find_from_u8_line_prefix(line: &[u8], ix_start: usize, key: &[u8]) -> Option<usize> {
-    let mut start = ix_start;
-    while let Some(ix) = find_from_u8(line, start, key) {
-        if ix == ix_start || line[ix - 1] == b'\n' {
-            return Some(ix);
-        }
-        start = ix + 1;
-    }
-    None
-}
-
 fn find_from_u8(line: &[u8], ix_start: usize, key: &[u8]) -> Option<usize> {
     assert!(!key.is_empty());
     assert!(ix_start < line.len());
@@ -963,170 +949,15 @@ fn find_from_u8(line: &[u8], ix_start: usize, key: &[u8]) -> Option<usize> {
     None
 }
 
-#[cfg(test)]
-mod tests {
-    //use std::io::{Read, Write};
-    use crate::{names::HTML, names::TEXT, CowHeader, CowMail, Header, HeaderMap, Mail, MediaType};
-
-    #[test]
-    fn test_header_mutations() {
-        let mut mail = CowMail::<CowHeader>::new();
-        assert_eq!(mail.headers.len(), 0);
-
-        let test_headers = vec![
-            ("X-Test", "Test"),
-            ("X-Another-Test", "Another"),
-            ("X-Test", "Test2"),
-            ("X-Another-Test", "Another1"),
-            ("X-Test", "Test3"),
-        ];
-
-        for (key, value) in test_headers.iter() {
-            mail.add_header(key, value);
+/// Like find_from_u8, but additionally filters such that `key` is at the start
+/// of a line (preceded by `\n`) or at the start of the search space.
+fn find_from_u8_line_prefix(line: &[u8], ix_start: usize, key: &[u8]) -> Option<usize> {
+    let mut start = ix_start;
+    while let Some(ix) = find_from_u8(line, start, key) {
+        if ix == ix_start || line[ix - 1] == b'\n' {
+            return Some(ix);
         }
-
-        assert_eq!(mail.headers.len(), test_headers.len());
-        for (idx, header) in mail.headers.iter().enumerate() {
-            assert_eq!(header.get_key(), test_headers[idx].0);
-            assert_eq!(header.get_value(), test_headers[idx].1);
-        }
-
-        mail.insert_header("X-Test", "Test1", 1);
-        assert_eq!(
-            mail.iter_values("X-Test").collect::<Vec<_>>(),
-            ["Test", "Test1", "Test2", "Test3"]
-        );
-
-        mail.replace_all_headers("X-Test", "Test555");
-        assert_eq!(
-            mail.iter_values("X-Test").collect::<Vec<_>>(),
-            ["Test555", "Test555", "Test555", "Test555"]
-        );
-
-        mail.replace_header("X-Test", "Test", 0);
-        mail.replace_header("X-Test", "Test1", 1);
-        mail.replace_header("X-Test", "Test2", 2);
-        mail.replace_header("X-Test", "Test3", 3);
-        assert_eq!(
-            mail.iter_values("X-Test").collect::<Vec<_>>(),
-            ["Test", "Test1", "Test2", "Test3"]
-        );
-
-        mail.remove_header("X-Test", 1);
-        assert_eq!(
-            mail.iter_values("X-Test").collect::<Vec<_>>(),
-            ["Test", "Test2", "Test3"]
-        );
-        mail.remove_all_headers("X-Test");
-        assert_eq!(mail.headers.len(), 2);
+        start = ix + 1;
     }
-
-    #[test]
-    fn test_body_mutations() {
-        let mut mail =
-            CowMail::try_from(concat!("Content-Type: text/plain\n", "\n", "This is a test message").as_bytes())
-                .unwrap();
-        let ctype = mail.content_type();
-        assert_eq!(ctype.mimetype, "text/plain");
-        assert_eq!(ctype.charset, "us-ascii");
-        assert_eq!(mail.is_multipart(), false);
-        assert_eq!(mail.get_content().unwrap(), "This is a test message");
-
-        mail.clear_content();
-        assert!(mail.find_header("Content-Type").is_none());
-        assert_eq!(mail.get_content().unwrap(), "");
-        mail.set_content("This is a new test message ❤\n".to_string(), None);
-        let ctype = mail.content_type();
-        assert_eq!(ctype.mimetype, "text/plain");
-        assert_eq!(ctype.charset, "UTF-8");
-
-        mail.clear_content();
-        assert_eq!(mail.get_content().unwrap(), "");
-        mail.set_content("This is a new test message\n".to_string(), None);
-        let ctype = mail.content_type();
-        assert_eq!(ctype.mimetype, "text/plain");
-        assert_eq!(ctype.charset, "us-ascii");
-
-        mail.add_header("From", "\"John Doe\" <john.doe@example.com>");
-
-        let mut html = CowMail::new();
-        html.set_content(
-            "<html><body>This is a new test message ☺</body></html>".to_string(),
-            Some(MediaType::new(TEXT, HTML)),
-        );
-
-        mail.add_alternative(html);
-        let alt_boundary = mail.get_boundary().unwrap();
-
-        let ctype = mail.content_type();
-        assert_eq!(ctype.mimetype, "multipart/alternative");
-        assert_eq!(ctype.params.get("boundary").unwrap(), &alt_boundary);
-        assert_eq!(
-            mail.find_header("Content-Type").unwrap().get_value(),
-            format!("multipart/alternative; boundary=\"{}\"", alt_boundary)
-        );
-
-        let mut attachment = CowMail::new();
-        attachment.set_content("This is a test text file".to_string(), None);
-        let mut disp = CowHeader::new("Content-Disposition", "attachment");
-        disp.set_param("filename", "Test☺File.html");
-        attachment.headers.push(disp);
-        mail.add_attachment(attachment);
-
-        let mixed_boundary = mail.get_boundary().unwrap();
-        let encoded = mail
-            .serialize()
-            .iter()
-            .flat_map(|p| p.into_iter())
-            .cloned()
-            .collect::<Vec<u8>>();
-
-        let expected = format!(
-            "From: \"John Doe\" <john.doe@example.com>\r\n\
-             MIME-Version: 1.0\r\n\
-             Content-Type: multipart/mixed;\r\n boundary=\"{mixed_boundary}\"\r\n\
-             \r\n\
-             --{mixed_boundary}\r\n\
-             Content-Type: multipart/alternative;\r\n boundary=\"{alt_boundary}\"\r\n\
-             \r\n\
-             --{alt_boundary}\r\n\
-             Content-Type: text/plain\r\n\
-             \r\n\
-             This is a new test message\r\n\
-             \r\n\
-             --{alt_boundary}\r\n\
-             Content-Type: text/html; charset=UTF-8\r\n\
-             Content-Transfer-Encoding: quoted-printable\r\n\
-             \r\n\
-             <html><body>This is a new test message =E2=98=BA</body></html>\r\n\
-             --{alt_boundary}--\r\n\
-             --{mixed_boundary}\r\n\
-             Content-Type: text/plain\r\n\
-             Content-Disposition: attachment;\r\n filename=\"=?utf-8?b?VGVzdOKYukZpbGUuaHRtbA==?=\"\r\n\
-             \r\n\
-             This is a test text file\r\n\
-             --{mixed_boundary}--\r\n"
-        );
-        let expected = expected.into_bytes();
-
-        assert_eq!(encoded, expected);
-
-        /*
-                let mut f = std::fs::File::open("/tmp/test.eml").unwrap();
-                let mut data = Vec::new();
-                f.read_to_end(&mut data).unwrap();
-
-                let mail = CowMail::try_from(&data[..]).unwrap();
-                let mut serialized = mail
-                    .serialize()
-                    .iter()
-                    .flat_map(|p| p.into_iter())
-                    .cloned()
-                    .collect::<Vec<u8>>();
-
-                assert_eq!(data, serialized);
-                let mut f = std::fs::File::create("/tmp/test1.eml").unwrap();
-                f.write_all(&mut serialized).unwrap();
-        */
-    }
+    None
 }

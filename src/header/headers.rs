@@ -1,4 +1,4 @@
-use crate::header::{Header, parse_header};
+use super::{Header, parse_header};
 
 pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     fn iter_headers(&'a self, key: &str) -> impl Iterator<Item = &'a H>;
@@ -110,7 +110,7 @@ pub fn parse_headers<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(Vec<H>, u
                 return Err("Headers were followed by an unexpected lone CR character!");
             }
         }
-        let (header, ix_next) = parse_header(&raw_data[ix..]).unwrap();
+        let (header, ix_next) = parse_header(&raw_data[ix..])?;
         headers.push(header);
         ix += ix_next;
     }

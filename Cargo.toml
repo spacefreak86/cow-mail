@@ -2,7 +2,7 @@
 name = "email-message"
 version = "0.0.1"
 authors = ["Thomas Oettli <spacefreak@noop.ch>"]
-edition = "2021"
+edition = "2024"
 
 [profile.release]
 lto = true
