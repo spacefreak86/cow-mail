@@ -1,5 +1,5 @@
     //use std::io::{Read, Write};
-    use crate::{CowHeader, CowMail, Header, HeaderMap, Mail, MediaType, names::HTML, names::TEXT};
+    use crate::{BodyType, CowHeader, CowMail, Header, HeaderMap, Mail, MediaType, names::HTML, names::TEXT};
 
     #[test]
     fn test_header_mutations() {
@@ -161,4 +161,442 @@
                 let mut f = std::fs::File::create("/tmp/test1.eml").unwrap();
                 f.write_all(&mut serialized).unwrap();
         */
+    }
+
+    // Test: single-part text/plain + set_html_body -> alternative[plain, html]
+    #[test]
+    fn test_single_plain_set_html() {
+        let mut mail = CowMail::try_from(
+            concat!("Content-Type: text/plain\n", "\n", "Plain text").as_bytes(),
+        )
+        .unwrap();
+
+        mail.set_html_body("<p>HTML</p>").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "Plain text");
+        assert_eq!(mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(), "<p>HTML</p>");
+    }
+
+    // Test: single-part text/html + set_text_body -> alternative[plain, html]
+    #[test]
+    fn test_single_html_set_plain() {
+        let mut mail = CowMail::try_from(
+            concat!("Content-Type: text/html\n", "\n", "<p>HTML</p>").as_bytes(),
+        )
+        .unwrap();
+
+        mail.set_text_body("Plain text").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "Plain text");
+        assert_eq!(mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(), "<p>HTML</p>");
+    }
+
+    // Test: empty + set_text + set_html -> alternative[plain, html]
+    #[test]
+    fn test_empty_set_text_then_html() {
+        let mut mail = CowMail::<CowHeader>::new();
+
+        mail.set_text_body("Plain text").unwrap();
+        assert_eq!(mail.content_type().mimetype, "text/plain");
+        assert!(!mail.is_multipart());
+
+        mail.set_html_body("<p>HTML</p>").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+    }
+
+    // Test: empty + set_html + set_text -> alternative[plain, html]
+    #[test]
+    fn test_empty_set_html_then_text() {
+        let mut mail = CowMail::<CowHeader>::new();
+
+        mail.set_html_body("<p>HTML</p>").unwrap();
+        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert!(mail.is_multipart());
+
+        mail.set_text_body("Plain text").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+    }
+
+    // Test: mixed[attachment] + set_text -> mixed[plain, attachment]
+    #[test]
+    fn test_mixed_attachment_set_text() {
+        // Parse a multipart/mixed with just an attachment (no empty subpart)
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/mixed; boundary=\"bound\"\n",
+                "\n",
+                "--bound\n",
+                "Content-Type: application/octet-stream\n",
+                "Content-Disposition: attachment\n",
+                "\n",
+                "attachment content\n",
+                "--bound--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts.len(), 1);
+
+        mail.set_text_body("Plain text").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert!(mail.subparts[1].is_attachment());
+    }
+
+    // Test: mixed[attachment] + set_text + set_html -> mixed[alternative[plain,html], attachment]
+    #[test]
+    fn test_mixed_attachment_set_text_then_html() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/mixed; boundary=\"bound\"\n",
+                "\n",
+                "--bound\n",
+                "Content-Type: application/octet-stream\n",
+                "Content-Disposition: attachment\n",
+                "\n",
+                "attachment content\n",
+                "--bound--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        mail.set_text_body("Plain text").unwrap();
+        mail.set_html_body("<p>HTML</p>").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts[0].subparts.len(), 2);
+        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype, "text/html");
+        assert!(mail.subparts[1].is_attachment());
+    }
+
+    // Test: mixed[plain, attachment] + set_html -> mixed[alternative[plain,html], attachment]
+    #[test]
+    fn test_mixed_plain_attachment_set_html() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/mixed; boundary=\"bound\"\n",
+                "\n",
+                "--bound\n",
+                "Content-Type: text/plain\n",
+                "\n",
+                "Plain text\n",
+                "--bound\n",
+                "Content-Type: application/octet-stream\n",
+                "Content-Disposition: attachment\n",
+                "\n",
+                "attachment\n",
+                "--bound--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        assert_eq!(mail.subparts.len(), 2);
+        mail.set_html_body("<p>HTML</p>").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts[0].subparts.len(), 2);
+        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype, "text/html");
+        assert!(mail.subparts[1].is_attachment());
+    }
+
+    // Test: related[html, image] + set_text -> alternative[plain, related[html, image]]
+    #[test]
+    fn test_related_html_set_text() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/related; boundary=\"bound\"\n",
+                "\n",
+                "--bound\n",
+                "Content-Type: text/html\n",
+                "\n",
+                "<p>HTML with image</p>\n",
+                "--bound\n",
+                "Content-Type: image/png\n",
+                "Content-ID: <img1>\n",
+                "\n",
+                "PNG_DATA\n",
+                "--bound--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/related");
+        mail.set_text_body("Plain text").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype, "multipart/related");
+        assert_eq!(mail.subparts[1].subparts.len(), 2);
+    }
+
+    // Test: mixed[related[html,img], attachment] + set_text
+    #[test]
+    fn test_mixed_related_attachment_set_text() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/mixed; boundary=\"mixed\"\n",
+                "\n",
+                "--mixed\n",
+                "Content-Type: multipart/related; boundary=\"related\"\n",
+                "\n",
+                "--related\n",
+                "Content-Type: text/html\n",
+                "\n",
+                "<p>HTML</p>\n",
+                "--related\n",
+                "Content-Type: image/png\n",
+                "Content-ID: <img1>\n",
+                "\n",
+                "PNG\n",
+                "--related--\n",
+                "--mixed\n",
+                "Content-Type: application/octet-stream\n",
+                "Content-Disposition: attachment\n",
+                "\n",
+                "attachment\n",
+                "--mixed--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        mail.set_text_body("Plain text").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype, "multipart/related");
+        assert!(mail.subparts[1].is_attachment());
+    }
+
+    // Test: alternative[plain] + set_html -> alternative[plain, html]
+    #[test]
+    fn test_alternative_plain_set_html() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/alternative; boundary=\"bound\"\n",
+                "\n",
+                "--bound\n",
+                "Content-Type: text/plain\n",
+                "\n",
+                "Plain text\n",
+                "--bound--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        mail.set_html_body("<p>HTML</p>").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+    }
+
+    // Test: alternative[html] + set_text -> alternative[plain, html]
+    #[test]
+    fn test_alternative_html_set_text() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/alternative; boundary=\"bound\"\n",
+                "\n",
+                "--bound\n",
+                "Content-Type: text/html\n",
+                "\n",
+                "<p>HTML</p>\n",
+                "--bound--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        mail.set_text_body("Plain text").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+    }
+
+    // Test: update existing body in alternative[plain, html]
+    #[test]
+    fn test_update_existing_body() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/alternative; boundary=\"bound\"\n",
+                "\n",
+                "--bound\n",
+                "Content-Type: text/plain\n",
+                "\n",
+                "Original plain\n",
+                "--bound\n",
+                "Content-Type: text/html\n",
+                "\n",
+                "<p>Original HTML</p>\n",
+                "--bound--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        mail.set_text_body("Updated plain").unwrap();
+        mail.set_html_body("<p>Updated HTML</p>").unwrap();
+
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(
+            mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(),
+            "Updated plain"
+        );
+        assert_eq!(
+            mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(),
+            "<p>Updated HTML</p>"
+        );
+    }
+
+    // Test: single-part attachment + set_text -> mixed[plain, attachment]
+    #[test]
+    fn test_single_attachment_set_text() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: application/octet-stream\n",
+                "Content-Disposition: attachment; filename=\"test.bin\"\n",
+                "\n",
+                "binary data"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        assert!(mail.is_attachment());
+        assert!(mail.get_body_part(BodyType::PLAIN).is_none());
+
+        mail.set_text_body("Plain text").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[0].get_content().unwrap(), "Plain text");
+        assert!(mail.subparts[1].is_attachment());
+        assert_eq!(mail.subparts[1].get_content().unwrap(), "binary data");
+    }
+
+    // Test: single-part attachment + set_html -> mixed[html, attachment]
+    #[test]
+    fn test_single_attachment_set_html() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: application/octet-stream\n",
+                "Content-Disposition: attachment; filename=\"test.bin\"\n",
+                "\n",
+                "binary data"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        assert!(mail.is_attachment());
+        assert!(mail.get_body_part(BodyType::HTML).is_none());
+
+        mail.set_html_body("<p>HTML</p>").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "text/html");
+        assert!(mail.subparts[1].is_attachment());
+    }
+
+    // Test: single-part attachment + set_text + set_html -> mixed[alternative[plain,html], attachment]
+    #[test]
+    fn test_single_attachment_set_text_then_html() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: application/octet-stream\n",
+                "Content-Disposition: attachment; filename=\"test.bin\"\n",
+                "\n",
+                "binary data"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        mail.set_text_body("Plain text").unwrap();
+        mail.set_html_body("<p>HTML</p>").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts[0].subparts.len(), 2);
+        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype, "text/html");
+        assert!(mail.subparts[1].is_attachment());
+        assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "Plain text");
+        assert_eq!(mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(), "<p>HTML</p>");
+    }
+
+    // Test: preserve order in mixed[attach1, plain, attach2] + set_html
+    #[test]
+    fn test_preserve_order_mixed() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/mixed; boundary=\"bound\"\n",
+                "\n",
+                "--bound\n",
+                "Content-Type: application/octet-stream\n",
+                "Content-Disposition: attachment\n",
+                "\n",
+                "attach1\n",
+                "--bound\n",
+                "Content-Type: text/plain\n",
+                "\n",
+                "Plain text\n",
+                "--bound\n",
+                "Content-Type: application/octet-stream\n",
+                "Content-Disposition: attachment\n",
+                "\n",
+                "attach2\n",
+                "--bound--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        mail.set_html_body("<p>HTML</p>").unwrap();
+
+        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.subparts.len(), 3);
+        assert!(mail.subparts[0].is_attachment());
+        assert_eq!(mail.subparts[1].content_type().mimetype, "multipart/alternative");
+        assert!(mail.subparts[2].is_attachment());
     }
