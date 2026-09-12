@@ -39,6 +39,12 @@ pub trait Header<'a>: Clone + Display {
         self.get_key().eq_ignore_ascii_case(key)
     }
 
+    fn key_starts_with(&self, prefix: &str) -> bool {
+        let key = self.get_key_raw();
+        let prefix = prefix.as_bytes();
+        key.len() >= prefix.len() && key[..prefix.len()].eq_ignore_ascii_case(prefix)
+    }
+
     fn get_value_ref(&self) -> Cow<'_, str> {
         // RFC 6532 says that header values can be UTF-8. Let's try that first, and
         // fall back to latin1 if that fails
