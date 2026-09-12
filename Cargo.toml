@@ -11,7 +11,7 @@ codegen-units = 1
 [dependencies]
 email = "*"
 email-encoding = "*"
-lettre = {version="*", features=["builder"]}
+quoted_printable = "*"
 charset = "*"
 mailparse = "*"
 mediatype = "*"

@@ -1,15 +1,15 @@
 #![forbid(unsafe_code)]
 
+pub mod body;
 pub mod header;
 
 #[cfg(test)]
 mod tests;
 
+pub use body::{BodyContent, ContentTransferEncoding};
 use header::CowHeader;
 pub use header::{Header, HeaderMap, parse_headers};
 
-use lettre::message::MaybeString;
-use lettre::message::header::ContentTransferEncoding;
 use mailparse::{
     DispositionType, MailParseError, ParsedContentDisposition, ParsedContentType, body::Body,
     parse_content_disposition, parse_content_type,
@@ -268,29 +268,27 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
 
         self.headers.add_header("Content-Type", ctype);
 
-        let body = lettre::message::Body::new(content);
-        let encoding = body.encoding();
+        let (bytes, encoding) = body::encode(content);
         if encoding != ContentTransferEncoding::SevenBit {
             self.headers.add_header("Content-Transfer-Encoding", encoding);
         }
 
-        self.body_bytes = Cow::Owned(body.into_vec());
+        self.body_bytes = Cow::Owned(bytes);
     }
 
-    pub fn set_content_raw<B: Into<MaybeString>>(&mut self, content: B, ctype: Option<MediaType>) {
+    pub fn set_content_raw<B: Into<BodyContent>>(&mut self, content: B, ctype: Option<MediaType>) {
         self.clear_content();
-        let body = lettre::message::Body::new(content);
 
         if let Some(ctype) = ctype {
             self.headers.add_header("Content-Type", ctype);
         }
 
-        let encoding = body.encoding();
+        let (bytes, encoding) = body::encode(content);
         if encoding != ContentTransferEncoding::SevenBit {
             self.headers.add_header("Content-Transfer-Encoding", encoding);
         }
 
-        self.body_bytes = Cow::Owned(body.into_vec());
+        self.body_bytes = Cow::Owned(bytes);
     }
 
     pub fn get_filename(&self) -> Option<String> {
