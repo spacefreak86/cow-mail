@@ -9,7 +9,6 @@ lto = true
 codegen-units = 1
 
 [dependencies]
-email = "*"
 email-encoding = "*"
 quoted_printable = "*"
 charset = "*"

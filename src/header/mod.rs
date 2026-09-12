@@ -5,11 +5,11 @@ pub use encoding::encode_header_value;
 pub use headers::{HeaderMap, parse_headers};
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt::{self, Display};
 
 use charset::decode_latin1;
-use email::{FromHeader, rfc2045::Rfc2045Parser};
+use mailparse::parse_content_type;
 
 pub trait Header<'a>: Clone + Display {
     fn new<K: ToString, V: ToString>(key: K, value: V) -> Self;
@@ -18,6 +18,18 @@ pub trait Header<'a>: Clone + Display {
     fn get_value_raw(&self) -> &[u8];
     fn set_value_raw(&mut self, value: Vec<u8>);
     fn serialize(&self) -> Vec<Cow<'_, [u8]>>;
+
+    /// The raw header line, key included. Implementations holding the data
+    /// should override this to borrow it instead of rebuilding it.
+    fn get_raw(&self) -> Cow<'_, [u8]> {
+        let key = self.get_key_raw();
+        let value = self.get_value_raw();
+        let mut raw = Vec::with_capacity(key.len() + 2 + value.len());
+        raw.extend_from_slice(key);
+        raw.extend_from_slice(b": ");
+        raw.extend_from_slice(value);
+        Cow::Owned(raw)
+    }
 
     fn get_key(&self) -> Cow<'_, str> {
         decode_latin1(self.get_key_raw())
@@ -37,26 +49,14 @@ pub trait Header<'a>: Clone + Display {
         }
     }
 
+    /// The header value, unfolded and RFC 2047 decoded.
     fn get_value(&self) -> String {
-        let raw_value = self.get_value_ref();
-        let mut value = String::new();
-        let mut newline = false;
-        for c in raw_value.chars() {
-            match (c, newline) {
-                ('\n' | '\r', false) => {
-                    newline = true;
-                }
-                ('\n' | '\r' | '\t' | ' ', true) => (),
-                _ => {
-                    if newline {
-                        newline = false;
-                        value.push(' ');
-                    }
-                    value.push(c);
-                }
-            }
+        match mailparse::parse_header(&self.get_raw()) {
+            Ok((header, _)) => header.get_value(),
+            // Only reachable for a malformed header; hand back the value as it is
+            // rather than losing it.
+            Err(_) => self.get_value_ref().into_owned(),
         }
-        FromHeader::from_header(value).expect("String can always be decoded")
     }
 
     fn set_value<V: ToString>(&mut self, value: V) {
@@ -90,7 +90,7 @@ pub trait Header<'a>: Clone + Display {
 
 struct RFC2045HeaderValue<T> {
     pub value: T,
-    pub params: HashMap<T, T>,
+    pub params: BTreeMap<T, T>,
 }
 
 impl<T: ToString> Display for RFC2045HeaderValue<T> {
@@ -117,8 +117,11 @@ impl<'a, T: Header<'a>> From<&'_ T> for RFC2045HeaderValue<String> {
     fn from(header: &T) -> Self {
         let key = header.get_key();
         let (value, params) = match key.to_ascii_lowercase().as_str() {
-            "content-type" | "content-disposition" => Rfc2045Parser::new(&header.get_value()).consume_all(),
-            _ => (header.get_value(), HashMap::new()),
+            "content-type" | "content-disposition" => {
+                let parsed = parse_content_type(&header.get_value());
+                (parsed.mimetype, parsed.params)
+            }
+            _ => (header.get_value(), BTreeMap::new()),
         };
 
         RFC2045HeaderValue { value, params }
@@ -177,6 +180,10 @@ impl<'a> Header<'a> for CowHeader<'a> {
             value_start,
             value_end,
         }
+    }
+
+    fn get_raw(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(&self.raw_bytes)
     }
 
     fn get_key_raw(&self) -> &[u8] {
