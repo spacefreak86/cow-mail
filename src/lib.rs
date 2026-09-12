@@ -18,7 +18,6 @@ pub use mediatype::{MediaType, names, values};
 use mediatype::{MediaTypeBuf, Name, ReadParams, WriteParams, names::*, values::UTF_8};
 use rand::{distr::Alphanumeric, rng, RngExt};
 use std::borrow::Cow;
-use std::boxed::Box;
 use std::ops::Deref;
 
 #[derive(Debug)]
@@ -177,7 +176,9 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
 
     fn get_content(&self) -> Result<String, CowMailError> {
         let ctype = self.content_type();
-        let transfer_encoding = self.find_value("Content-Transfer-Encoding");
+        let transfer_encoding = self
+            .find_value("Content-Transfer-Encoding")
+            .map(|encoding| encoding.to_lowercase());
         match Body::new(self.raw_body(), &ctype, &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded_as_string()?),
             Body::SevenBit(body) | Body::EightBit(body) => Ok(body.get_as_string()?),
@@ -187,7 +188,9 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
 
     fn get_content_raw(&self) -> Result<Vec<u8>, CowMailError> {
         let ctype = self.content_type();
-        let transfer_encoding = self.find_value("Content-Transfer-Encoding");
+        let transfer_encoding = self
+            .find_value("Content-Transfer-Encoding")
+            .map(|encoding| encoding.to_lowercase());
         match Body::new(self.raw_body(), &ctype, &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded()?),
             Body::SevenBit(body) | Body::EightBit(body) => Ok(Vec::from(body.get_raw())),
@@ -254,7 +257,6 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     pub fn set_content<T: ToString>(&mut self, content: T, ctype: Option<MediaType>) {
-        self.clear_content();
         let content = content.to_string();
 
         let mut ctype = ctype.unwrap_or(MediaType::new(TEXT, PLAIN));
@@ -262,14 +264,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
             ctype.set_param(CHARSET, UTF_8);
         }
 
-        self.headers.add_header("Content-Type", ctype);
-
-        let (bytes, encoding) = body::encode(content);
-        if encoding != ContentTransferEncoding::SevenBit {
-            self.headers.add_header("Content-Transfer-Encoding", encoding);
-        }
-
-        self.body_bytes = Cow::Owned(bytes);
+        self.set_content_raw(content, Some(ctype));
     }
 
     pub fn set_content_raw<B: Into<BodyContent>>(&mut self, content: B, ctype: Option<MediaType>) {
@@ -319,12 +314,13 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
                     return BodyCheckStatus::NotBody;
                 }
 
-                let body_types = match bodytype {
-                    Some(bodytype) => vec![Name::from(bodytype)],
-                    None => vec![PLAIN, HTML],
+                let subtype = mime.subty();
+                let is_body = match bodytype {
+                    Some(bodytype) => subtype == Name::from(bodytype),
+                    None => subtype == PLAIN || subtype == HTML,
                 };
 
-                match body_types.contains(&mime.subty()) {
+                match is_body {
                     true => BodyCheckStatus::IsBody,
                     false => BodyCheckStatus::NotBody,
                 }
@@ -403,7 +399,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
 
         let mut ix = 0;
         while ix < self.headers.len() {
-            if self.headers[ix].get_key().to_ascii_lowercase().starts_with("content-") {
+            if self.headers[ix].key_starts_with("content-") {
                 subpart.headers.push(self.headers.remove(ix));
             } else {
                 ix += 1;
@@ -447,40 +443,29 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         self.make_multipart(RELATED, boundary)
     }
 
-    fn add_multipart(&mut self, subpart: CowMail<'a, H>, ctype: MediaType) {
-        match self.is_multipart() {
-            false => {
-                self.make_multipart(ctype.subty, None);
-                self.subparts.push(subpart);
-            }
-            true => {
-                let existing_ctype = self.get_mime_type();
-                if existing_ctype.ty() == MULTIPART && existing_ctype != ctype {
-                    self.make_multipart(ctype.subty, None);
-                    self.subparts.push(subpart);
-                } else {
-                    self.subparts.push(subpart);
-                }
-            }
-        }
+    /// `make_multipart` already returns early when this part is that multipart
+    /// subtype, so it covers both wrapping and appending to an existing container.
+    fn add_multipart(&mut self, subpart: CowMail<'a, H>, subtype: Name) {
+        self.make_multipart(subtype, None);
+        self.subparts.push(subpart);
     }
 
     pub fn add_related(&mut self, mut subpart: CowMail<'a, H>) {
         if subpart.headers.find_header("Content-Disposition").is_none() {
             subpart.headers.add_header("Content-Disposition", "inline");
         }
-        self.add_multipart(subpart, MediaType::new(MULTIPART, RELATED))
+        self.add_multipart(subpart, RELATED)
     }
 
     pub fn add_alternative(&mut self, subpart: CowMail<'a, H>) {
-        self.add_multipart(subpart, MediaType::new(MULTIPART, ALTERNATIVE))
+        self.add_multipart(subpart, ALTERNATIVE)
     }
 
     pub fn add_attachment(&mut self, mut subpart: CowMail<'a, H>) {
         if subpart.headers.find_header("Content-Disposition").is_none() {
             subpart.headers.add_header("Content-Disposition", "attachment");
         }
-        self.add_multipart(subpart, MediaType::new(MULTIPART, MIXED))
+        self.add_multipart(subpart, MIXED)
     }
 
     fn get_part_at_path(&self, path: &[usize]) -> &Self {
@@ -612,24 +597,23 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
                 Cow::Borrowed(body_bytes) => vec![Cow::Borrowed(body_bytes)],
                 Cow::Owned(_) => vec![Cow::Borrowed(&self.body_bytes), Cow::Borrowed(self.end_bytes)],
             },
-            MessageType::MultiPart(boundary) => std::iter::once(vec![Cow::Borrowed(&*self.body_bytes)])
-                .chain(self.subparts.iter().map(|p| {
-                    let mut res = vec![
-                        Cow::Borrowed("--".as_bytes()),
-                        Cow::Owned(boundary.as_bytes().to_owned()),
-                        Cow::Borrowed("\r\n".as_bytes()),
-                    ];
-                    res.append(&mut p.serialize());
-                    res
-                }))
-                .chain(std::iter::once(vec![
-                    Cow::Borrowed("--".as_bytes()),
-                    Cow::Owned(boundary.as_bytes().to_owned()),
-                    Cow::Borrowed("--".as_bytes()),
-                    Cow::Borrowed(self.end_bytes),
-                ]))
-                .flatten()
-                .collect(),
+            MessageType::MultiPart(boundary) => {
+                let delimiter = [b"--", boundary.as_bytes(), b"\r\n"].concat();
+                let closing = [b"--", boundary.as_bytes(), b"--"].concat();
+
+                std::iter::once(vec![Cow::Borrowed(&*self.body_bytes)])
+                    .chain(self.subparts.iter().map(|p| {
+                        let mut res = vec![Cow::Owned(delimiter.clone())];
+                        res.append(&mut p.serialize());
+                        res
+                    }))
+                    .chain(std::iter::once(vec![
+                        Cow::Owned(closing),
+                        Cow::Borrowed(self.end_bytes),
+                    ]))
+                    .flatten()
+                    .collect()
+            }
         }
     }
 
@@ -804,8 +788,7 @@ impl<'a, H: Header<'a> + 'a> Mail<'a, H> for CowMail<'a, H> {
     }
 
     fn clear_content(&mut self) {
-        self.headers
-            .retain(|h| !h.get_key().to_ascii_lowercase().starts_with("content-"));
+        self.headers.retain(|h| !h.key_starts_with("content-"));
         self.body_bytes = Cow::Borrowed(&[]);
         self.subparts.clear();
         self.end_bytes = b"\r\n";

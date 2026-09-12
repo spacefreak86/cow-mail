@@ -359,6 +359,25 @@
         assert_eq!(mail.subparts[1].subparts.len(), 2);
     }
 
+    // RFC 2045 section 6.1: Content-Transfer-Encoding values are case insensitive
+    #[test]
+    fn test_uppercase_transfer_encoding_is_decoded() {
+        for encoding in ["base64", "Base64", "BASE64"] {
+            let raw = format!(
+                concat!(
+                    "Content-Type: text/plain\n",
+                    "Content-Transfer-Encoding: {}\n",
+                    "\n",
+                    "aGVsbG8gd29ybGQ="
+                ),
+                encoding
+            );
+            let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+            assert_eq!(mail.get_content().unwrap(), "hello world", "encoding: {encoding}");
+            assert_eq!(mail.get_content_raw().unwrap(), b"hello world", "encoding: {encoding}");
+        }
+    }
+
     // Test: related[img, plain] without a `start` param + set_html.
     // The body is not the first subpart, which used to hit unreachable!().
     #[test]
