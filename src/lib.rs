@@ -207,6 +207,35 @@ pub fn generate_boundary() -> String {
         .collect::<String>()
 }
 
+/// The parsed Content-Type of a part, used to prevent excessive calls go get_mimetype during traversal.
+struct PartInfo {
+    ctype: ContentType,
+    media: MediaTypeBuf,
+}
+
+impl PartInfo {
+    fn ty(&self) -> Name<'_> {
+        self.media.ty()
+    }
+
+    fn subty(&self) -> Name<'_> {
+        self.media.subty()
+    }
+
+    fn boundary(&self) -> Option<&String> {
+        self.ctype.params.get("boundary")
+    }
+
+    /// The `start` parameter of a multipart/related, naming its root part.
+    fn start(&self) -> Option<&String> {
+        self.ctype.params.get("start")
+    }
+
+    fn is_multipart(&self) -> bool {
+        self.ty() == MULTIPART && self.boundary().is_some()
+    }
+}
+
 /// Result of checking whether a MIME part is a text body (plain/html).
 enum BodyCheckStatus {
     /// This part is a text/plain or text/html body (not an attachment)
@@ -249,11 +278,13 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
     }
 
-    fn get_mime_type(&self) -> MediaTypeBuf {
-        self.content_type()
+    fn part_info(&self) -> PartInfo {
+        let ctype = self.content_type();
+        let media = ctype
             .mimetype
             .parse::<MediaTypeBuf>()
-            .unwrap_or_else(|_| MediaTypeBuf::new(TEXT, PLAIN))
+            .unwrap_or_else(|_| MediaTypeBuf::new(TEXT, PLAIN));
+        PartInfo { ctype, media }
     }
 
     pub fn set_content<T: ToString>(&mut self, content: T, ctype: Option<MediaType>) {
@@ -304,17 +335,16 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     /// Check if this MIME part is a text body (plain/html), not a body, or needs traversal.
-    fn check_body_status(&self, bodytype: Option<BodyType>) -> BodyCheckStatus {
-        match self.is_multipart() {
+    fn check_body_status(&self, info: &PartInfo, bodytype: Option<BodyType>) -> BodyCheckStatus {
+        match info.is_multipart() {
             true if self.subparts.is_empty() => BodyCheckStatus::NotBody,
             true => BodyCheckStatus::NeedsTraversal,
             false => {
-                let mime = self.get_mime_type();
-                if mime.ty() != TEXT || self.is_attachment() {
+                if info.ty() != TEXT || self.is_attachment() {
                     return BodyCheckStatus::NotBody;
                 }
 
-                let subtype = mime.subty();
+                let subtype = info.subty();
                 let is_body = match bodytype {
                     Some(bodytype) => subtype == Name::from(bodytype),
                     None => subtype == PLAIN || subtype == HTML,
@@ -328,8 +358,8 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
     }
 
-    fn get_related_candidate(&self) -> Option<usize> {
-        self.content_type().params.get("start").and_then(|start| {
+    fn get_related_candidate(&self, info: &PartInfo) -> Option<usize> {
+        info.start().and_then(|start| {
             self.subparts.iter().position(|part| {
                 part.headers
                     .find_value("Content-ID")
@@ -347,14 +377,15 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     fn push_body_path(&self, bodytype: BodyType, path: &mut Vec<usize>) -> bool {
-        match self.check_body_status(Some(bodytype)) {
+        let info = self.part_info();
+        match self.check_body_status(&info, Some(bodytype)) {
             BodyCheckStatus::IsBody => true,
             BodyCheckStatus::NotBody => false,
             BodyCheckStatus::NeedsTraversal => {
                 // A multipart/related names its root part with the `start` parameter.
                 // When it resolves, that part is the only candidate.
-                if self.get_mime_type().subty() == RELATED
-                    && let Some(candidate) = self.get_related_candidate()
+                if info.subty() == RELATED
+                    && let Some(candidate) = self.get_related_candidate(&info)
                 {
                     path.push(candidate);
                     if self.subparts[candidate].push_body_path(bodytype, path) {
@@ -387,12 +418,9 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     fn make_multipart(&mut self, to_type: Name, boundary: Option<String>) {
-        let ctype = self.get_mime_type();
-        if ctype.ty() == MULTIPART {
-            let subtype = ctype.subty();
-            if subtype == to_type {
-                return;
-            }
+        let info = self.part_info();
+        if info.ty() == MULTIPART && info.subty() == to_type {
+            return;
         }
 
         let mut subpart = CowMail::new();
@@ -505,8 +533,8 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
             self.make_mixed(None);
         }
 
-        let mime_type = self.get_mime_type();
-        let subtype = mime_type.subty();
+        let info = self.part_info();
+        let subtype = info.subty();
 
         if subtype == RELATED && body_type == BodyType::PLAIN {
             self.make_alternative(None);
@@ -535,8 +563,8 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         };
 
         let container = self.get_part_at_path_mut(container_path);
-        let mime_type = container.get_mime_type();
-        let subtype = mime_type.subty();
+        let info = container.part_info();
+        let subtype = info.subty();
 
         if subtype == ALTERNATIVE {
             container.insert_new_part(new_part, body_type);
