@@ -52,6 +52,16 @@ pub enum BodyType {
     PLAIN,
 }
 
+impl BodyType {
+    /// The other body type: the two form a `multipart/alternative` pair.
+    pub fn other(self) -> Self {
+        match self {
+            Self::PLAIN => Self::HTML,
+            Self::HTML => Self::PLAIN,
+        }
+    }
+}
+
 impl From<BodyType> for Name<'_> {
     fn from(btype: BodyType) -> Self {
         match btype {
@@ -204,20 +214,6 @@ enum BodyCheckStatus {
     NeedsTraversal,
 }
 
-/// Describes the structural context where a body part is located.
-enum BodyStructure {
-    /// Message itself is the body (single-part text/plain or text/html)
-    RootIsBody,
-    /// Body is inside a multipart/alternative container
-    InAlternative { path: Vec<usize> },
-    /// Body is inside a multipart/related container
-    InRelated { path: Vec<usize> },
-    /// Body is directly inside a container (mixed or other multipart)
-    DirectInContainer { path: Vec<usize>, body_index: usize },
-    /// No body found
-    NoBody,
-}
-
 #[derive(Debug, Clone)]
 pub struct CowMail<'a, H: Header<'a>> {
     pub bytes_orig: &'a [u8],
@@ -347,34 +343,51 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         })
     }
 
-    pub fn get_body_part(&self, bodytype: BodyType) -> Option<&CowMail<'a, H>> {
+    /// The path of subpart indices leading to the body part of `bodytype`.
+    /// An empty path means this part is itself the body.
+    fn find_body_path(&self, bodytype: BodyType) -> Option<Vec<usize>> {
+        let mut path = Vec::new();
+        self.push_body_path(bodytype, &mut path).then_some(path)
+    }
+
+    fn push_body_path(&self, bodytype: BodyType, path: &mut Vec<usize>) -> bool {
         match self.check_body_status(Some(bodytype)) {
-            BodyCheckStatus::IsBody => Some(self),
-            BodyCheckStatus::NotBody => None,
+            BodyCheckStatus::IsBody => true,
+            BodyCheckStatus::NotBody => false,
             BodyCheckStatus::NeedsTraversal => {
+                // A multipart/related names its root part with the `start` parameter.
+                // When it resolves, that part is the only candidate.
                 if self.get_mime_type().subty() == RELATED
                     && let Some(candidate) = self.get_related_candidate()
                 {
-                    return self.subparts[candidate].get_body_part(bodytype);
+                    path.push(candidate);
+                    if self.subparts[candidate].push_body_path(bodytype, path) {
+                        return true;
+                    }
+                    path.pop();
+                    return false;
                 }
-                self.subparts.iter().find_map(|p| p.get_body_part(bodytype))
+
+                for (ix, subpart) in self.subparts.iter().enumerate() {
+                    path.push(ix);
+                    if subpart.push_body_path(bodytype, path) {
+                        return true;
+                    }
+                    path.pop();
+                }
+                false
             }
         }
     }
 
+    pub fn get_body_part(&self, bodytype: BodyType) -> Option<&CowMail<'a, H>> {
+        let path = self.find_body_path(bodytype)?;
+        Some(self.get_part_at_path(&path))
+    }
+
     pub fn get_body_part_mut(&mut self, bodytype: BodyType) -> Option<&mut CowMail<'a, H>> {
-        match self.check_body_status(Some(bodytype)) {
-            BodyCheckStatus::IsBody => Some(self),
-            BodyCheckStatus::NotBody => None,
-            BodyCheckStatus::NeedsTraversal => {
-                if self.get_mime_type().subty() == RELATED
-                    && let Some(candidate) = self.get_related_candidate()
-                {
-                    return self.subparts[candidate].get_body_part_mut(bodytype);
-                }
-                self.subparts.iter_mut().find_map(|p| p.get_body_part_mut(bodytype))
-            }
-        }
+        let path = self.find_body_path(bodytype)?;
+        Some(self.get_part_at_path_mut(&path))
     }
 
     fn make_multipart(&mut self, to_type: Name, boundary: Option<String>) {
@@ -470,64 +483,20 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         self.add_multipart(subpart, MediaType::new(MULTIPART, MIXED))
     }
 
+    fn get_part_at_path(&self, path: &[usize]) -> &Self {
+        let mut current = self;
+        for &idx in path {
+            current = &current.subparts[idx];
+        }
+        current
+    }
+
     fn get_part_at_path_mut(&mut self, path: &[usize]) -> &mut Self {
         let mut current = self;
         for &idx in path {
             current = &mut current.subparts[idx];
         }
         current
-    }
-
-    fn find_body_structural_context(&self, body_type: BodyType) -> BodyStructure {
-        match self.check_body_status(Some(body_type)) {
-            BodyCheckStatus::IsBody => BodyStructure::RootIsBody,
-            BodyCheckStatus::NotBody => BodyStructure::NoBody,
-            BodyCheckStatus::NeedsTraversal => self
-                .find_body_structural_context_recursive(body_type, &mut Vec::new())
-                .unwrap_or(BodyStructure::NoBody),
-        }
-    }
-
-    fn find_body_structural_context_recursive(
-        &self,
-        body_type: BodyType,
-        path: &mut Vec<usize>,
-    ) -> Option<BodyStructure> {
-        let mime_type = self.get_mime_type();
-        let subtype = mime_type.subty();
-
-        let indices: Box<dyn Iterator<Item = usize>> = if subtype == RELATED {
-            Box::new(self.get_related_candidate().or(Some(0)).into_iter())
-        } else {
-            Box::new(0..self.subparts.len())
-        };
-
-        for i in indices {
-            let subpart = &self.subparts[i];
-            match subpart.check_body_status(Some(body_type)) {
-                BodyCheckStatus::IsBody => {
-                    if subtype == ALTERNATIVE {
-                        return Some(BodyStructure::InAlternative { path: path.clone() });
-                    } else if subtype == RELATED {
-                        return Some(BodyStructure::InRelated { path: path.clone() });
-                    } else {
-                        return Some(BodyStructure::DirectInContainer {
-                            path: path.clone(),
-                            body_index: i,
-                        });
-                    }
-                }
-                BodyCheckStatus::NotBody => continue,
-                BodyCheckStatus::NeedsTraversal => {
-                    path.push(i);
-                    if let Some(result) = subpart.find_body_structural_context_recursive(body_type, path) {
-                        return Some(result);
-                    }
-                    path.pop();
-                }
-            }
-        }
-        None
     }
 
     fn ctype_for_body(body_type: BodyType) -> Option<MediaType<'static>> {
@@ -564,36 +533,37 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     }
 
     fn insert_body_with_existing<T: ToString>(&mut self, content: T, body_type: BodyType) {
-        let other_type = match body_type {
-            BodyType::PLAIN => BodyType::HTML,
-            BodyType::HTML => BodyType::PLAIN,
-        };
         let ctype = Self::ctype_for_body(body_type);
 
         let mut new_part = Self::new();
         new_part.set_content(content, ctype);
 
-        match self.find_body_structural_context(other_type) {
-            BodyStructure::RootIsBody => {
-                self.make_alternative(None);
-                self.insert_new_part(new_part, body_type);
-            }
-            BodyStructure::InAlternative { path } => {
-                let container = self.get_part_at_path_mut(&path);
-                container.insert_new_part(new_part, body_type);
-            }
-            BodyStructure::InRelated { path } => {
-                let container = self.get_part_at_path_mut(&path);
-                container.make_alternative(None);
-                container.insert_new_part(new_part, body_type);
-            }
-            BodyStructure::DirectInContainer { path, body_index } => {
-                let container = self.get_part_at_path_mut(&path);
-                let body_part = &mut container.subparts[body_index];
-                body_part.make_alternative(None);
-                body_part.insert_new_part(new_part, body_type);
-            }
-            BodyStructure::NoBody => unreachable!(),
+        let path = self
+            .find_body_path(body_type.other())
+            .expect("caller has checked that the other body exists");
+
+        let Some((&body_index, container_path)) = path.split_last() else {
+            // The message itself is the other body
+            self.make_alternative(None);
+            self.insert_new_part(new_part, body_type);
+            return;
+        };
+
+        let container = self.get_part_at_path_mut(container_path);
+        let mime_type = container.get_mime_type();
+        let subtype = mime_type.subty();
+
+        if subtype == ALTERNATIVE {
+            container.insert_new_part(new_part, body_type);
+        } else if subtype == RELATED {
+            container.make_alternative(None);
+            container.insert_new_part(new_part, body_type);
+        } else {
+            // Any other container: pair the existing body with the new one
+            // in an alternative of their own.
+            let body_part = &mut container.subparts[body_index];
+            body_part.make_alternative(None);
+            body_part.insert_new_part(new_part, body_type);
         }
     }
 
@@ -607,11 +577,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
 
         // Case 2: No body at all -> insert directly
-        let other_type = match body_type {
-            BodyType::PLAIN => BodyType::HTML,
-            BodyType::HTML => BodyType::PLAIN,
-        };
-        if self.get_body_part(other_type).is_none() {
+        if self.get_body_part(body_type.other()).is_none() {
             self.insert_body_no_existing(content, body_type);
             return Ok(());
         }

@@ -359,6 +359,41 @@
         assert_eq!(mail.subparts[1].subparts.len(), 2);
     }
 
+    // Test: related[img, plain] without a `start` param + set_html.
+    // The body is not the first subpart, which used to hit unreachable!().
+    #[test]
+    fn test_related_body_not_first_set_html() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/related; boundary=\"bound\"\n",
+                "\n",
+                "--bound\n",
+                "Content-Type: image/png\n",
+                "Content-Disposition: inline\n",
+                "\n",
+                "PNG_DATA\n",
+                "--bound\n",
+                "Content-Type: text/plain\n",
+                "\n",
+                "Plain text\n",
+                "--bound--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        assert!(mail.get_body_part(BodyType::PLAIN).is_some());
+        mail.set_html_body("<p>HTML</p>").unwrap();
+
+        // the related container is wrapped in an alternative holding both bodies
+        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts.len(), 2);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "multipart/related");
+        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "Plain text\n");
+        assert_eq!(mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(), "<p>HTML</p>");
+    }
+
     // Test: mixed[related[html,img], attachment] + set_text
     #[test]
     fn test_mixed_related_attachment_set_text() {
