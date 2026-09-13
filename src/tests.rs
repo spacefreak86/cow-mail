@@ -20,7 +20,7 @@
         let mut mail = CowMail::<CowHeader>::new();
         assert_eq!(mail.headers.len(), 0);
 
-        let test_headers = vec![
+        let test_headers = [
             ("X-Test", "Test"),
             ("X-Another-Test", "Another"),
             ("X-Test", "Test2"),
@@ -76,7 +76,7 @@
         let ctype = mail.content_type();
         assert_eq!(ctype.mimetype, "text/plain");
         assert_eq!(ctype.charset, "us-ascii");
-        assert_eq!(mail.is_multipart(), false);
+        assert!(!mail.is_multipart());
         assert_eq!(mail.get_content().unwrap(), "This is a test message");
 
         mail.clear_content();
@@ -124,7 +124,7 @@
         let encoded = mail
             .serialize()
             .iter()
-            .flat_map(|p| p.into_iter())
+            .flat_map(|p| p.iter())
             .cloned()
             .collect::<Vec<u8>>();
 
