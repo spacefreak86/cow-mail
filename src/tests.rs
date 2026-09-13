@@ -654,3 +654,112 @@
         assert_eq!(mail.subparts[1].content_type().mimetype, "multipart/alternative");
         assert!(mail.subparts[2].is_attachment());
     }
+
+    // Test: the parser splits preamble, parts, terminators and epilogue the way
+    // serialization expects them back.
+    #[test]
+    fn test_parse_part_boundaries() {
+        let raw = concat!(
+            "Content-Type: multipart/mixed; boundary=\"bound\"\r\n",
+            "\r\n",
+            "preamble\r\n",
+            "--bound\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "Plain text\r\n",
+            "--bound\r\n",
+            "Content-Type: text/html\r\n",
+            "\r\n",
+            "<p>HTML</p>\r\n",
+            "\r\n",
+            "--bound--\r\n",
+            "epilogue\r\n"
+        );
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+
+        assert_eq!(mail.raw_body(), b"preamble\r\n");
+        assert_eq!(mail.end_bytes, b"\r\nepilogue\r\n");
+        assert_eq!(mail.subparts.len(), 2);
+
+        assert_eq!(mail.subparts[0].raw_body(), b"Plain text");
+        assert_eq!(mail.subparts[0].end_bytes, b"\r\n");
+        // A body ending in a blank line keeps both CRLFs: one for the body, one
+        // as the part terminator.
+        assert_eq!(mail.subparts[1].raw_body(), b"<p>HTML</p>\r\n");
+        assert_eq!(mail.subparts[1].end_bytes, b"\r\n");
+    }
+
+    // Test: an empty part keeps its terminator instead of swallowing the header
+    // separator.
+    #[test]
+    fn test_parse_empty_part() {
+        let raw = concat!(
+            "Content-Type: multipart/mixed; boundary=\"bound\"\r\n",
+            "\r\n",
+            "--bound\r\n",
+            "Subject: empty\r\n",
+            "\r\n",
+            "--bound--\r\n"
+        );
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+
+        assert_eq!(mail.subparts.len(), 1);
+        assert_eq!(mail.subparts[0].bytes_orig, b"Subject: empty\r\n\r\n");
+        assert_eq!(mail.subparts[0].raw_body(), b"");
+        assert_eq!(mail.subparts[0].end_bytes, b"");
+    }
+
+    // Test: a declared boundary that never appears must not lose the body
+    // (mailparse drops it in that case).
+    #[test]
+    fn test_parse_missing_boundary_keeps_body() {
+        let raw = concat!(
+            "Content-Type: multipart/mixed; boundary=\"bound\"\r\n",
+            "\r\n",
+            "no boundary here\r\n"
+        );
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+
+        assert!(mail.subparts.is_empty());
+        assert_eq!(mail.raw_body(), b"no boundary here");
+        assert_eq!(mail.end_bytes, b"\r\n");
+    }
+
+    // Test: a part of a multipart/digest defaults to message/rfc822
+    #[test]
+    fn test_parse_digest_default_ctype() {
+        let raw = concat!(
+            "Content-Type: multipart/digest; boundary=\"bound\"\r\n",
+            "\r\n",
+            "--bound\r\n",
+            "\r\n",
+            "Subject: forwarded\r\n",
+            "\r\n",
+            "--bound--\r\n"
+        );
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+
+        assert_eq!(mail.subparts.len(), 1);
+        assert_eq!(mail.subparts[0].content_type().mimetype, "message/rfc822");
+    }
+
+    // Test: a closing delimiter at the very end of the buffer, with no trailing
+    // CRLF, used to be missed by the hand-rolled boundary search.
+    #[test]
+    fn test_parse_closing_boundary_at_eof() {
+        let raw = concat!(
+            "Content-Type: multipart/mixed; boundary=\"bound\"\r\n",
+            "\r\n",
+            "--bound\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "Plain text\r\n",
+            "--bound--"
+        );
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+
+        assert_eq!(mail.subparts.len(), 1);
+        assert_eq!(mail.subparts[0].raw_body(), b"Plain text");
+        assert_eq!(mail.subparts[0].end_bytes, b"\r\n");
+        assert_eq!(mail.end_bytes, b"");
+    }

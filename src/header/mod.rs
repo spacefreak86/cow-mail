@@ -11,6 +11,8 @@ use std::fmt::{self, Display};
 use charset::decode_latin1;
 use mailparse::parse_content_type;
 
+use crate::CowMailError;
+
 pub trait Header<'a>: Clone + Display {
     fn new<K: ToString, V: ToString>(key: K, value: V) -> Self;
     fn from(raw_bytes: &'a [u8], key_end: usize, value_start: usize, value_end: usize) -> Self;
@@ -228,11 +230,11 @@ enum HeaderParseState {
     ValueNewline,
 }
 
-pub fn parse_header<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(H, usize), &'static str> {
+pub fn parse_header<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(H, usize), CowMailError> {
     let mut it = raw_data.iter();
     let mut ix = 0;
     let mut c = match it.next() {
-        None => return Err("Empty string provided"),
+        None => return Err(CowMailError::Generic("Empty string provided".to_string())),
         Some(v) => *v,
     };
 
@@ -245,9 +247,10 @@ pub fn parse_header<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(H, usize),
         match state {
             HeaderParseState::Initial => {
                 if c == b' ' {
-                    return Err(
-                        "Header cannot start with a space; it is likely an overhanging line from a previous header",
-                    );
+                    return Err(CowMailError::Generic(
+                        "Header cannot start with a space; it is likely an overhanging line from a previous header"
+                            .to_string(),
+                    ));
                 };
                 state = HeaderParseState::Key;
                 continue;

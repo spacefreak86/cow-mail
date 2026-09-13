@@ -1,4 +1,5 @@
 use super::{Header, parse_header};
+use crate::CowMailError;
 
 pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     fn iter_headers(&'a self, key: &str) -> impl Iterator<Item = &'a H>;
@@ -93,7 +94,7 @@ impl<'a, H: Header<'a> + 'a> HeaderMap<'a, H> for Vec<H> {
 }
 
 
-pub fn parse_headers<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(Vec<H>, usize), &'static str> {
+pub fn parse_headers<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(Vec<H>, usize), CowMailError> {
     let mut headers: Vec<H> = Vec::new();
     let mut ix = 0;
     loop {
@@ -107,7 +108,9 @@ pub fn parse_headers<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(Vec<H>, u
                 ix += 2;
                 break;
             } else {
-                return Err("Headers were followed by an unexpected lone CR character!");
+                return Err(CowMailError::Generic(
+                    "Headers were followed by an unexpected lone CR character!".to_string(),
+                ));
             }
         }
         let (header, ix_next) = parse_header(&raw_data[ix..])?;

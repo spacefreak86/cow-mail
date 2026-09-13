@@ -11,7 +11,7 @@ use header::CowHeader;
 pub use header::{Header, HeaderMap, parse_headers};
 
 use mailparse::{
-    DispositionType, MailParseError, ParsedContentDisposition, ParsedContentType, body::Body,
+    DispositionType, MailParseError, ParsedContentDisposition, ParsedContentType, ParsedMail, body::Body,
     parse_content_disposition, parse_content_type,
 };
 pub use mediatype::{MediaType, names, values};
@@ -836,7 +836,7 @@ impl<'a, H: Header<'a> + 'a> Mail<'a, H> for CowMail<'a, H> {
 }
 
 impl<'a> TryFrom<&'a [u8]> for CowMail<'a, CowHeader<'a>> {
-    type Error = &'static str;
+    type Error = CowMailError;
 
     fn try_from(raw_data: &'a [u8]) -> Result<Self, Self::Error> {
         parse_mail(raw_data)
@@ -897,14 +897,44 @@ impl std::io::Read for CowMailReader<'_> {
     }
 }
 
-pub fn parse_mail<'a, H: Header<'a> + 'a>(raw_data: &'a [u8]) -> Result<CowMail<'a, H>, &'static str> {
-    parse_mail_recursive(raw_data, false)
+pub fn parse_mail<'a, H: Header<'a> + 'a>(raw_data: &'a [u8]) -> Result<CowMail<'a, H>, CowMailError> {
+    let parsed = mailparse::parse_mail(raw_data)?;
+    build_mail(raw_data, &parsed, false)
 }
 
-fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
+/// Byte offset of `inner` within `outer`. Both have to point into the same
+/// buffer, which holds for every `ParsedMail::raw_bytes` relative to its
+/// parent's. Returns `None` instead of panicking, so that a mailparse that
+/// stops handing back subslices surfaces as an error, not as a bad index.
+fn offset_in(outer: &[u8], inner: &[u8]) -> Option<usize> {
+    let ix = (inner.as_ptr() as usize).checked_sub(outer.as_ptr() as usize)?;
+    (ix + inner.len() <= outer.len()).then_some(ix)
+}
+
+/// Undo mailparse's `strip_trailing_crlf`: widen `end` over the newline that
+/// separates a part from the delimiter line following it, so that the slice
+/// covers everything the part occupied in the message.
+fn extend_over_newline(raw_data: &[u8], end: usize) -> usize {
+    if raw_data[end..].starts_with(b"\r\n") {
+        end + 2
+    } else if raw_data[end..].starts_with(b"\n") {
+        end + 1
+    } else {
+        end
+    }
+}
+
+/// Build a `CowMail` from a part mailparse has already split out.
+///
+/// `raw_data` is the part as it appears in the message, including the newline
+/// mailparse strips off before a delimiter line; `parsed` has to start at the
+/// same offset. mailparse decides where the parts are, we keep the separators
+/// it drops.
+fn build_mail<'a, H: Header<'a> + 'a>(
     raw_data: &'a [u8],
+    parsed: &ParsedMail<'a>,
     in_multipart_digest: bool,
-) -> Result<CowMail<'a, H>, &'static str> {
+) -> Result<CowMail<'a, H>, CowMailError> {
     let (headers, body_idx) = parse_headers::<H>(raw_data)?;
 
     let mut body_end_idx = raw_data.len();
@@ -915,13 +945,6 @@ fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
         end_bytes = b"\r\n";
     }
 
-    let default_ctype = ContentType::default_conditional(in_multipart_digest);
-
-    let ctype = headers
-        .find_value("Content-Type")
-        .map(|s| ContentType::from(s.as_str()))
-        .unwrap_or(default_ctype.clone());
-
     let mut mail = CowMail {
         bytes_orig: raw_data,
         header_bytes_orig: &raw_data[0..body_idx],
@@ -930,73 +953,59 @@ fn parse_mail_recursive<'a, H: Header<'a> + 'a>(
         body_bytes_orig: &raw_data[body_idx..body_end_idx],
         subparts: Vec::new(),
         end_bytes,
-        default_ctype,
+        default_ctype: ContentType::default_conditional(in_multipart_digest),
     };
 
-    if ctype.mimetype.starts_with("multipart/") && ctype.params.contains_key("boundary") && raw_data.len() > body_idx {
-        let in_multipart_digest = ctype.mimetype == "multipart/digest";
-        let boundary = String::from("--") + &ctype.params["boundary"];
-        if let Some(body_end_idx) = find_from_u8_line_prefix(raw_data, body_idx, boundary.as_bytes()) {
-            mail.body_bytes = Cow::Borrowed(&raw_data[body_idx..body_end_idx]);
-            let mut boundary_end_idx = body_end_idx + boundary.len();
-            while let Some(part_start_idx) = find_from_u8(raw_data, boundary_end_idx, b"\n").map(|v| v + 1) {
-                let part_end_idx =
-                    find_from_u8_line_prefix(raw_data, part_start_idx, boundary.as_bytes()).unwrap_or(raw_data.len());
-                mail.subparts.push(parse_mail_recursive(
-                    &raw_data[part_start_idx..part_end_idx],
-                    in_multipart_digest,
-                )?);
-                boundary_end_idx = part_end_idx + boundary.len();
-                if boundary_end_idx + 2 > raw_data.len()
-                    || (raw_data[boundary_end_idx] == b'-' && raw_data[boundary_end_idx + 1] == b'-')
-                {
-                    boundary_end_idx += 2;
-                    if boundary_end_idx < raw_data.len() {
-                        mail.end_bytes = &raw_data[boundary_end_idx..];
-                    }
-                    break;
-                }
-            }
-        }
+    // An empty subpart list covers both "not a multipart" and "boundary declared
+    // but never seen"; either way the body stays what it is above. Note that
+    // mailparse drops the body in the latter case, so its body_bytes is of no use
+    // to us here.
+    let Some(first_part) = parsed.subparts.first() else {
+        return Ok(mail);
+    };
+
+    let boundary = parsed
+        .ctype
+        .params
+        .get("boundary")
+        .ok_or_else(|| CowMailError::Generic("multipart without a boundary parameter".to_string()))?;
+
+    let offset_of = |part: &ParsedMail<'a>| {
+        offset_in(raw_data, part.raw_bytes)
+            .ok_or_else(|| CowMailError::Generic("subpart is not a slice of its parent".to_string()))
+    };
+
+    // The preamble ends where the delimiter line before the first part begins.
+    let first_part_idx = offset_of(first_part)?;
+    let scan_end_idx = first_part_idx.saturating_sub(1).max(body_idx);
+    let mut delimiter_idx = raw_data[body_idx..scan_end_idx]
+        .iter()
+        .rposition(|&byte| byte == b'\n')
+        .map(|ix| body_idx + ix + 1)
+        .unwrap_or(body_idx);
+
+    mail.body_bytes = Cow::Borrowed(&raw_data[body_idx..delimiter_idx]);
+    mail.body_bytes_orig = &raw_data[body_idx..delimiter_idx];
+
+    let in_multipart_digest = parsed.ctype.mimetype == "multipart/digest";
+
+    for part in &parsed.subparts {
+        let part_idx = offset_of(part)?;
+        // Widening over the stripped newline is what keeps an empty part, or one
+        // whose body ends in a blank line, byte-exact: the last newline is the
+        // part's terminator, not part of the delimiter.
+        let part_end_idx = extend_over_newline(raw_data, part_idx + part.raw_bytes.len());
+        mail.subparts
+            .push(build_mail(&raw_data[part_idx..part_end_idx], part, in_multipart_digest)?);
+        // The part ends right where the next delimiter line begins.
+        delimiter_idx = part_end_idx;
     }
+
+    // Everything after the closing delimiter is the epilogue.
+    let closing_idx = delimiter_idx + 2 + boundary.len();
+    if closing_idx + 2 <= raw_data.len() && &raw_data[closing_idx..closing_idx + 2] == b"--" {
+        mail.end_bytes = &raw_data[closing_idx + 2..];
+    }
+
     Ok(mail)
-}
-
-fn find_from_u8(line: &[u8], ix_start: usize, key: &[u8]) -> Option<usize> {
-    assert!(!key.is_empty());
-    assert!(ix_start < line.len());
-    if line.len() < key.len() {
-        return None;
-    }
-    let ix_end = line.len() - key.len();
-    if ix_start <= ix_end {
-        for i in ix_start..ix_end {
-            if line[i] == key[0] {
-                let mut success = true;
-                for j in 1..key.len() {
-                    if line[i + j] != key[j] {
-                        success = false;
-                        break;
-                    }
-                }
-                if success {
-                    return Some(i);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Like find_from_u8, but additionally filters such that `key` is at the start
-/// of a line (preceded by `\n`) or at the start of the search space.
-fn find_from_u8_line_prefix(line: &[u8], ix_start: usize, key: &[u8]) -> Option<usize> {
-    let mut start = ix_start;
-    while let Some(ix) = find_from_u8(line, start, key) {
-        if ix == ix_start || line[ix - 1] == b'\n' {
-            return Some(ix);
-        }
-        start = ix + 1;
-    }
-    None
 }
