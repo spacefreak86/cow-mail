@@ -792,6 +792,81 @@
         ));
     }
 
+    // Test: a message written with bare LF keeps its line endings, including on
+    // the delimiter lines.
+    #[test]
+    fn test_roundtrip_lf_line_endings() {
+        assert_roundtrip(concat!(
+            "Content-Type: multipart/mixed; boundary=\"outer\"\n",
+            "\n",
+            "preamble\n",
+            "--outer\n",
+            "Content-Type: multipart/alternative; boundary=\"inner\"\n",
+            "\n",
+            "--inner\n",
+            "Content-Type: text/plain\n",
+            "\n",
+            "Plain text\n",
+            "--inner\n",
+            "Content-Type: text/html\n",
+            "\n",
+            "<p>HTML</p>\n",
+            "--inner--\n",
+            "--outer--\n"
+        ));
+    }
+
+    // Test: padding after the boundary on a delimiter line is preserved.
+    #[test]
+    fn test_roundtrip_delimiter_padding() {
+        assert_roundtrip(concat!(
+            "Content-Type: multipart/mixed; boundary=\"bound\"\r\n",
+            "\r\n",
+            "--bound  \r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "Plain text\r\n",
+            "--bound--  \r\n"
+        ));
+    }
+
+    // Test: the stored delimiter tail is boundary-agnostic, so renaming the
+    // boundary keeps the line endings and rewrites every delimiter.
+    #[test]
+    fn test_set_boundary_keeps_line_endings() {
+        let mut mail = CowMail::try_from(
+            concat!(
+                "Content-Type: multipart/mixed; boundary=\"bound\"\n",
+                "\n",
+                "--bound\n",
+                "Content-Type: text/plain\n",
+                "\n",
+                "Plain text\n",
+                "--bound--\n"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+        mail.set_boundary("new").unwrap();
+
+        assert_eq!(
+            String::from_utf8_lossy(&serialize(&mail)),
+            concat!(
+                // The rewritten header, and the blank line after it, are written
+                // the way we write headers; the delimiter lines keep the line
+                // endings the message had.
+                "Content-Type: multipart/mixed; boundary=\"new\"\r\n",
+                "\r\n",
+                "--new\n",
+                "Content-Type: text/plain\n",
+                "\n",
+                "Plain text\n",
+                "--new--\n"
+            )
+        );
+    }
+
     #[test]
     fn test_roundtrip_single_part() {
         assert_roundtrip("Subject: Test\r\n\r\nThis is a test message\r\n");

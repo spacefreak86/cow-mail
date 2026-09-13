@@ -254,6 +254,10 @@ pub struct CowMail<'a, H: Header<'a>> {
     pub body_bytes: Cow<'a, [u8]>,
     pub body_bytes_orig: &'a [u8],
     pub subparts: Vec<CowMail<'a, H>>,
+    /// What followed `--<boundary>` on the delimiter line introducing this part,
+    /// usually `\r\n`. Kept verbatim so that a message written with bare LF, or
+    /// with padding after the boundary, serializes back unchanged.
+    pub delimiter_end: &'a [u8],
     pub end_bytes: &'a [u8],
     pub default_ctype: ContentType,
 }
@@ -274,6 +278,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
             body_bytes_orig: &[],
             subparts: Vec::new(),
             end_bytes: b"",
+            delimiter_end: b"\r\n",
             default_ctype: ContentType::default(),
         }
     }
@@ -616,19 +621,27 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
 
     pub fn serialize_headers(&self) -> Vec<Cow<'_, [u8]>> {
         let mut res: Vec<Cow<[u8]>> = self.headers.iter().flat_map(|h| h.serialize()).collect();
-        res.push(Cow::Borrowed(b"\r\n"));
+        // The blank line between headers and body follows the line ending of the
+        // header right before it, so that a message written with bare LF keeps its
+        // line endings while rewritten headers keep ours. With no headers at all,
+        // the parsed header block is the separator.
+        let separator = match res.last() {
+            Some(header) => line_ending(header),
+            None => line_ending(self.header_bytes_orig),
+        };
+        res.push(Cow::Borrowed(separator));
         res
     }
 
     pub fn serialize_body(&self) -> Vec<Cow<'_, [u8]>> {
         match self.message_type() {
             MessageType::MultiPart(boundary) if !self.subparts.is_empty() => {
-                let delimiter = [b"--", boundary.as_bytes(), b"\r\n"].concat();
+                let delimiter = [b"--", boundary.as_bytes()].concat();
                 let closing = [b"--", boundary.as_bytes(), b"--"].concat();
 
                 std::iter::once(vec![Cow::Borrowed(&*self.body_bytes)])
                     .chain(self.subparts.iter().map(|p| {
-                        let mut res = vec![Cow::Owned(delimiter.clone())];
+                        let mut res = vec![Cow::Owned(delimiter.clone()), Cow::Borrowed(p.delimiter_end)];
                         res.append(&mut p.serialize());
                         res
                     }))
@@ -902,6 +915,15 @@ pub fn parse_mail<'a, H: Header<'a> + 'a>(raw_data: &'a [u8]) -> Result<CowMail<
     build_mail(raw_data, &parsed, false)
 }
 
+/// The line ending `bytes` ends with, defaulting to CRLF.
+fn line_ending(bytes: &[u8]) -> &'static [u8] {
+    match bytes {
+        [.., b'\r', b'\n'] => b"\r\n",
+        [.., b'\n'] => b"\n",
+        _ => b"\r\n",
+    }
+}
+
 /// Byte offset of `inner` within `outer`. Both have to point into the same
 /// buffer, which holds for every `ParsedMail::raw_bytes` relative to its
 /// parent's. Returns `None` instead of panicking, so that a mailparse that
@@ -953,6 +975,9 @@ fn build_mail<'a, H: Header<'a> + 'a>(
         body_bytes_orig: &raw_data[body_idx..body_end_idx],
         subparts: Vec::new(),
         end_bytes,
+        // Set by the caller, which is the only one that can see the delimiter
+        // line in front of this part.
+        delimiter_end: b"\r\n",
         default_ctype: ContentType::default_conditional(in_multipart_digest),
     };
 
@@ -995,8 +1020,14 @@ fn build_mail<'a, H: Header<'a> + 'a>(
         // whose body ends in a blank line, byte-exact: the last newline is the
         // part's terminator, not part of the delimiter.
         let part_end_idx = extend_over_newline(raw_data, part_idx + part.raw_bytes.len());
-        mail.subparts
-            .push(build_mail(&raw_data[part_idx..part_end_idx], part, in_multipart_digest)?);
+        let mut subpart = build_mail(&raw_data[part_idx..part_end_idx], part, in_multipart_digest)?;
+
+        // Whatever the delimiter line carried after `--<boundary>`.
+        let delimiter_end_idx = delimiter_idx + 2 + boundary.len();
+        if delimiter_end_idx <= part_idx {
+            subpart.delimiter_end = &raw_data[delimiter_end_idx..part_idx];
+        }
+        mail.subparts.push(subpart);
         // The part ends right where the next delimiter line begins.
         delimiter_idx = part_end_idx;
     }
