@@ -273,7 +273,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
             body_bytes: Cow::Borrowed(&[]),
             body_bytes_orig: &[],
             subparts: Vec::new(),
-            end_bytes: b"\r\n",
+            end_bytes: b"",
             default_ctype: ContentType::default(),
         }
     }
@@ -311,6 +311,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
 
         self.body_bytes = Cow::Owned(bytes);
+        self.end_bytes = b"\r\n";
     }
 
     pub fn get_filename(&self) -> Option<String> {
@@ -621,11 +622,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
 
     pub fn serialize_body(&self) -> Vec<Cow<'_, [u8]>> {
         match self.message_type() {
-            MessageType::SinglePart => match self.body_bytes {
-                Cow::Borrowed(body_bytes) => vec![Cow::Borrowed(body_bytes)],
-                Cow::Owned(_) => vec![Cow::Borrowed(&self.body_bytes), Cow::Borrowed(self.end_bytes)],
-            },
-            MessageType::MultiPart(boundary) => {
+            MessageType::MultiPart(boundary) if !self.subparts.is_empty() => {
                 let delimiter = [b"--", boundary.as_bytes(), b"\r\n"].concat();
                 let closing = [b"--", boundary.as_bytes(), b"--"].concat();
 
@@ -642,6 +639,9 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
                     .flatten()
                     .collect()
             }
+            // Single part — or a part declaring a boundary that never appeared in
+            // the message, which keeps the body it was parsed with.
+            _ => vec![Cow::Borrowed(&self.body_bytes), Cow::Borrowed(self.end_bytes)],
         }
     }
 
@@ -812,14 +812,14 @@ impl<'a, H: Header<'a> + 'a> Mail<'a, H> for CowMail<'a, H> {
         self.headers.clear();
         self.body_bytes = Cow::Borrowed(&[]);
         self.subparts.clear();
-        self.end_bytes = b"\r\n";
+        self.end_bytes = b"";
     }
 
     fn clear_content(&mut self) {
         self.headers.retain(|h| !h.key_starts_with("content-"));
         self.body_bytes = Cow::Borrowed(&[]);
         self.subparts.clear();
-        self.end_bytes = b"\r\n";
+        self.end_bytes = b"";
     }
 
     fn default_ctype(&self) -> ContentType {
@@ -1001,11 +1001,14 @@ fn build_mail<'a, H: Header<'a> + 'a>(
         delimiter_idx = part_end_idx;
     }
 
-    // Everything after the closing delimiter is the epilogue.
+    // Everything after the closing delimiter is the epilogue. Without a closing
+    // delimiter there is nothing left over: the trailing newline the split above
+    // found belongs to the last part, not to this one.
     let closing_idx = delimiter_idx + 2 + boundary.len();
-    if closing_idx + 2 <= raw_data.len() && &raw_data[closing_idx..closing_idx + 2] == b"--" {
-        mail.end_bytes = &raw_data[closing_idx + 2..];
-    }
+    mail.end_bytes = match closing_idx + 2 <= raw_data.len() && &raw_data[closing_idx..closing_idx + 2] == b"--" {
+        true => &raw_data[closing_idx + 2..],
+        false => b"",
+    };
 
     Ok(mail)
 }

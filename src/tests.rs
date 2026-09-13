@@ -1,6 +1,20 @@
     //use std::io::{Read, Write};
     use crate::{BodyType, CowHeader, CowMail, Header, HeaderMap, Mail, MediaType, names::HTML, names::TEXT};
 
+    fn serialize<'a>(mail: &'a CowMail<'a, CowHeader<'a>>) -> Vec<u8> {
+        mail.serialize().iter().flat_map(|p| p.iter()).copied().collect()
+    }
+
+    /// Parse `raw` and assert it serializes back to exactly the same bytes.
+    fn assert_roundtrip(raw: &str) {
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&serialize(&mail)),
+            raw,
+            "round-trip is not byte-exact"
+        );
+    }
+
     #[test]
     fn test_header_mutations() {
         let mut mail = CowMail::<CowHeader>::new();
@@ -741,6 +755,115 @@
 
         assert_eq!(mail.subparts.len(), 1);
         assert_eq!(mail.subparts[0].content_type().mimetype, "message/rfc822");
+    }
+
+    // Test: a nested multipart with a preamble and an epilogue round-trips
+    // byte-exact.
+    #[test]
+    fn test_roundtrip_nested_multipart() {
+        assert_roundtrip(concat!(
+            "From: \"John Doe\" <john.doe@example.com>\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: multipart/mixed;\r\n boundary=\"outer\"\r\n",
+            "\r\n",
+            "This is a MIME message.\r\n",
+            "\r\n",
+            "--outer\r\n",
+            "Content-Type: multipart/alternative; boundary=\"inner\"\r\n",
+            "\r\n",
+            "--inner\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "Plain text\r\n",
+            "--inner\r\n",
+            "Content-Type: text/html\r\n",
+            "\r\n",
+            "<p>HTML</p>\r\n",
+            "\r\n",
+            "--inner--\r\n",
+            "--outer\r\n",
+            "Content-Type: application/pdf\r\n",
+            "Content-Disposition: attachment; filename=\"test.pdf\"\r\n",
+            "Content-Transfer-Encoding: base64\r\n",
+            "\r\n",
+            "JVBERi0xLjQK\r\n",
+            "--outer--\r\n",
+            "epilogue\r\n"
+        ));
+    }
+
+    #[test]
+    fn test_roundtrip_single_part() {
+        assert_roundtrip("Subject: Test\r\n\r\nThis is a test message\r\n");
+        assert_roundtrip("Subject: Test\r\n\r\nThis is a test message");
+        assert_roundtrip("Subject: Test\r\n\r\n");
+    }
+
+    #[test]
+    fn test_roundtrip_edge_parts() {
+        // Empty part, and a part whose body ends in a blank line.
+        assert_roundtrip(concat!(
+            "Content-Type: multipart/mixed; boundary=\"bound\"\r\n",
+            "\r\n",
+            "--bound\r\n",
+            "Subject: empty\r\n",
+            "\r\n",
+            "--bound\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "Plain text\r\n",
+            "\r\n",
+            "--bound--\r\n"
+        ));
+        // Closing delimiter at the end of the buffer, no trailing CRLF.
+        assert_roundtrip(concat!(
+            "Content-Type: multipart/mixed; boundary=\"bound\"\r\n",
+            "\r\n",
+            "--bound\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "Plain text\r\n",
+            "--bound--"
+        ));
+        // Declared boundary that never appears: the body is kept as it is.
+        assert_roundtrip(concat!(
+            "Content-Type: multipart/mixed; boundary=\"bound\"\r\n",
+            "\r\n",
+            "no boundary here\r\n"
+        ));
+    }
+
+    // Test: a message cut off before its closing delimiter keeps every byte it
+    // had; serialization completes it with the delimiter that is missing.
+    #[test]
+    fn test_roundtrip_truncated_message() {
+        let raw = concat!(
+            "Content-Type: multipart/mixed; boundary=\"bound\"\r\n",
+            "\r\n",
+            "--bound\r\n",
+            "Content-Type: text/plain\r\n",
+            "\r\n",
+            "Plain text\r\n"
+        );
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&serialize(&mail)),
+            format!("{raw}--bound--")
+        );
+    }
+
+    // Test: an empty body emits no terminator of its own, content supplies one.
+    #[test]
+    fn test_empty_body_has_no_terminator() {
+        let mut mail = CowMail::default();
+        mail.add_header("Subject", "Test");
+        assert_eq!(String::from_utf8_lossy(&serialize(&mail)), "Subject: Test\r\n\r\n");
+
+        mail.set_text_body("Plain text").unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&serialize(&mail)),
+            "Subject: Test\r\nContent-Type: text/plain\r\n\r\nPlain text\r\n"
+        );
     }
 
     // Test: a closing delimiter at the very end of the buffer, with no trailing
