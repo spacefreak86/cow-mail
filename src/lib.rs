@@ -7,7 +7,7 @@ pub mod header;
 mod tests;
 
 pub use body::{BodyContent, ContentTransferEncoding};
-use header::CowHeader;
+use header::{CowHeader, build_headers};
 pub use header::{Header, HeaderMap, parse_headers};
 
 use mailparse::{
@@ -928,15 +928,16 @@ fn line_ending(bytes: &[u8]) -> &'static [u8] {
 /// buffer, which holds for every `ParsedMail::raw_bytes` relative to its
 /// parent's. Returns `None` instead of panicking, so that a mailparse that
 /// stops handing back subslices surfaces as an error, not as a bad index.
-fn offset_in(outer: &[u8], inner: &[u8]) -> Option<usize> {
+pub(crate) fn offset_in(outer: &[u8], inner: &[u8]) -> Option<usize> {
     let ix = (inner.as_ptr() as usize).checked_sub(outer.as_ptr() as usize)?;
     (ix + inner.len() <= outer.len()).then_some(ix)
 }
 
-/// Undo mailparse's `strip_trailing_crlf`: widen `end` over the newline that
-/// separates a part from the delimiter line following it, so that the slice
-/// covers everything the part occupied in the message.
-fn extend_over_newline(raw_data: &[u8], end: usize) -> usize {
+/// Widen `end` over the newline that follows it, if there is one. Used to undo
+/// mailparse's `strip_trailing_crlf`, so that a part's slice covers everything
+/// it occupied in the message, and to step over the blank line that ends a
+/// header block.
+pub(crate) fn extend_over_newline(raw_data: &[u8], end: usize) -> usize {
     if raw_data[end..].starts_with(b"\r\n") {
         end + 2
     } else if raw_data[end..].starts_with(b"\n") {
@@ -957,7 +958,7 @@ fn build_mail<'a, H: Header<'a> + 'a>(
     parsed: &ParsedMail<'a>,
     in_multipart_digest: bool,
 ) -> Result<CowMail<'a, H>, CowMailError> {
-    let (headers, body_idx) = parse_headers::<H>(raw_data)?;
+    let (headers, body_idx) = build_headers::<H>(raw_data, &parsed.headers)?;
 
     let mut body_end_idx = raw_data.len();
     let mut end_bytes: &[u8] = &[];

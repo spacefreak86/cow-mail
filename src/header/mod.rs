@@ -3,15 +3,16 @@ mod headers;
 
 pub use encoding::encode_header_value;
 pub use headers::{HeaderMap, parse_headers};
+pub(crate) use headers::build_headers;
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::{self, Display};
 
 use charset::decode_latin1;
-use mailparse::parse_content_type;
+use mailparse::{MailHeader, parse_content_type};
 
-use crate::CowMailError;
+use crate::{CowMailError, offset_in};
 
 pub trait Header<'a>: Clone + Display {
     fn new<K: ToString, V: ToString>(key: K, value: V) -> Self;
@@ -222,96 +223,65 @@ impl Display for CowHeader<'_> {
     }
 }
 
-enum HeaderParseState {
-    Initial,
-    Key,
-    PreValue,
-    Value,
-    ValueNewline,
+
+/// End of the — possibly folded — header line whose value ends at `value_end`:
+/// past the first newline that is not followed by continuation whitespace. Only
+/// `\r`, `\n`, spaces and tabs can appear between the end of a value and the end
+/// of its line; anything else would have moved `value_end` along.
+fn header_line_end(raw_data: &[u8], value_end: usize) -> usize {
+    let mut ix = value_end;
+    loop {
+        let Some(newline_ix) = raw_data[ix..].iter().position(|&byte| byte == b'\n') else {
+            return raw_data.len();
+        };
+        ix += newline_ix + 1;
+        if !matches!(raw_data.get(ix), Some(b' ' | b'\t')) {
+            return ix;
+        }
+    }
+}
+
+/// Rebuild the header line mailparse scanned into `parsed`, which has to be a
+/// header of `raw_data`, so that its key and value slices point into it.
+///
+/// A `MailHeader` keeps the key and the value, but not the line they came from,
+/// which is what we serialize. The key always starts at the first byte of its
+/// line, and a line ends where the next one's key begins — hence `next`; the
+/// last header of a block has none and needs a look ahead instead. Returns the
+/// header and the index just past its line.
+fn build_header<'a, H: Header<'a>>(
+    raw_data: &'a [u8],
+    parsed: &MailHeader<'a>,
+    next: Option<&MailHeader<'a>>,
+) -> Result<(H, usize), CowMailError> {
+    let offset_of = |bytes: &[u8]| {
+        offset_in(raw_data, bytes)
+            .ok_or_else(|| CowMailError::Generic("header is not a slice of its part".to_string()))
+    };
+
+    let key = parsed.get_key_raw();
+    let value = parsed.get_value_raw();
+
+    let line_start = offset_of(key)?;
+    let value_start = offset_of(value)?;
+    let value_end = value_start + value.len();
+
+    let line_end = match next {
+        Some(next) => offset_of(next.get_key_raw())?,
+        None => header_line_end(raw_data, value_end),
+    };
+
+    let header = H::from(
+        &raw_data[line_start..line_end],
+        key.len(),
+        value_start - line_start,
+        value_end - line_start,
+    );
+
+    Ok((header, line_end))
 }
 
 pub fn parse_header<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(H, usize), CowMailError> {
-    let mut it = raw_data.iter();
-    let mut ix = 0;
-    let mut c = match it.next() {
-        None => return Err(CowMailError::Generic("Empty string provided".to_string())),
-        Some(v) => *v,
-    };
-
-    let mut ix_key_end = None;
-    let mut ix_value_start = 0;
-    let mut ix_value_end = 0;
-
-    let mut state = HeaderParseState::Initial;
-    loop {
-        match state {
-            HeaderParseState::Initial => {
-                if c == b' ' {
-                    return Err(CowMailError::Generic(
-                        "Header cannot start with a space; it is likely an overhanging line from a previous header"
-                            .to_string(),
-                    ));
-                };
-                state = HeaderParseState::Key;
-                continue;
-            }
-            HeaderParseState::Key => {
-                if c == b':' {
-                    ix_key_end = Some(ix);
-                    state = HeaderParseState::PreValue;
-                } else if c == b'\n' {
-                    // Technically this is invalid. We'll handle it gracefully
-                    // since it does appear to happen in the wild and other
-                    // MTAs deal with it. Our handling is to just treat everything
-                    // encountered so far on this line as the header key, and
-                    // leave the value empty.
-                    ix_key_end = Some(ix);
-                    ix_value_start = ix;
-                    ix_value_end = ix;
-                    ix += 1;
-                    break;
-                }
-            }
-            HeaderParseState::PreValue => {
-                if c != b' ' {
-                    ix_value_start = ix;
-                    ix_value_end = ix;
-                    state = HeaderParseState::Value;
-                    continue;
-                }
-            }
-            HeaderParseState::Value => {
-                if c == b'\n' {
-                    state = HeaderParseState::ValueNewline;
-                } else if c != b'\r' {
-                    ix_value_end = ix + 1;
-                }
-            }
-            HeaderParseState::ValueNewline => {
-                if c == b' ' || c == b'\t' {
-                    state = HeaderParseState::Value;
-                    continue;
-                } else {
-                    break;
-                }
-            }
-        }
-        ix += 1;
-        c = match it.next() {
-            None => break,
-            Some(v) => *v,
-        };
-    }
-    match ix_key_end {
-        Some(v) => Ok((H::from(&raw_data[0..ix], v, ix_value_start, ix_value_end), ix)),
-
-        None => Ok((
-            // Technically this is invalid. We'll handle it gracefully
-            // since we handle the analogous situation above. Our handling
-            // is to just treat everything encountered on this line as
-            // the header key, and leave the value empty.
-            H::from(&raw_data[0..ix], ix, ix, ix),
-            ix,
-        )),
-    }
+    let (parsed, _) = mailparse::parse_header(raw_data)?;
+    build_header(raw_data, &parsed, None)
 }

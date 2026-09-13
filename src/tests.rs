@@ -961,3 +961,142 @@
         assert_eq!(mail.subparts[0].end_bytes, b"\r\n");
         assert_eq!(mail.end_bytes, b"");
     }
+
+    // The header lines below are rebuilt from the key/value slices mailparse
+    // hands back, so each of these pins a case where the line extends past the
+    // value: folding, a stray CR, an empty value, or the end of the buffer.
+    #[test]
+    fn test_roundtrip_folded_header() {
+        let raw = concat!(
+            "Subject: a\r\n",
+            " continued\r\n",
+            "To: john@example.com\r\n",
+            "\r\n",
+            "body\r\n"
+        );
+        assert_roundtrip(raw);
+
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+        assert_eq!(mail.headers.len(), 2);
+        assert_eq!(mail.headers[0].get_key_raw(), b"Subject");
+        assert_eq!(mail.headers[0].get_value_raw(), b"a\r\n continued");
+        assert_eq!(mail.headers[0].get_value(), "a continued");
+        assert_eq!(mail.headers[1].get_key_raw(), b"To");
+    }
+
+    // A fold whose last line holds nothing but whitespace: the value ends before
+    // the line does, for the last header as well as for one in the middle.
+    #[test]
+    fn test_roundtrip_header_folded_onto_blank_line() {
+        let raw = concat!("Subject: x\r\n", " \r\n", "To: y\r\n", " \r\n", "\r\n", "body\r\n");
+        assert_roundtrip(raw);
+
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+        assert_eq!(mail.headers.len(), 2);
+        assert_eq!(mail.headers[0].get_key_raw(), b"Subject");
+        assert_eq!(mail.headers[1].get_key_raw(), b"To");
+        assert_eq!(mail.raw_body(), b"body");
+    }
+
+    // Invalid, but it happens in the wild: mailparse treats the whole line as the
+    // key and leaves the value empty. Note that the key keeps the trailing CR.
+    #[test]
+    fn test_roundtrip_header_without_colon() {
+        let raw = concat!("Subject\r\n", "To: y\r\n", "\r\n", "body\r\n");
+        assert_roundtrip(raw);
+
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+        assert_eq!(mail.headers.len(), 2);
+        assert_eq!(mail.headers[0].get_key_raw(), b"Subject\r");
+        assert_eq!(mail.headers[0].get_value_raw(), b"");
+        assert_eq!(mail.headers[1].get_value_raw(), b"y");
+    }
+
+    #[test]
+    fn test_roundtrip_empty_header_value() {
+        let raw = concat!("X-Empty:\r\n", "Subject: x\r\n", "\r\n", "body\r\n");
+        assert_roundtrip(raw);
+
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+        assert_eq!(mail.headers[0].get_key_raw(), b"X-Empty");
+        assert_eq!(mail.headers[0].get_value_raw(), b"");
+        assert_eq!(mail.headers[1].get_value_raw(), b"x");
+    }
+
+    #[test]
+    fn test_roundtrip_no_headers() {
+        assert_roundtrip("\r\nbody\r\n");
+        assert_roundtrip("\nbody\n");
+
+        let mail = CowMail::try_from("\r\nbody\r\n".as_bytes()).unwrap();
+        assert!(mail.headers.is_empty());
+        assert_eq!(mail.raw_body(), b"body");
+    }
+
+    #[test]
+    fn test_roundtrip_lf_headers() {
+        let raw = concat!("Subject: a\n", " continued\n", "To: y\n", "\n", "body\n");
+        assert_roundtrip(raw);
+
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+        assert_eq!(mail.headers[0].get_value_raw(), b"a\n continued");
+        assert_eq!(mail.headers[1].get_key_raw(), b"To");
+    }
+
+    // A message that ends with its header block, with and without the final
+    // newline. The blank line separating headers from body is always written, so
+    // these are the one case that does not round-trip byte-exact.
+    #[test]
+    fn test_header_block_without_blank_line() {
+        let mail = CowMail::try_from("Subject: x\r\nTo: y\r\n".as_bytes()).unwrap();
+        assert_eq!(mail.headers.len(), 2);
+        assert_eq!(mail.headers[1].get_value_raw(), b"y");
+        assert_eq!(mail.raw_body(), b"");
+        assert_eq!(
+            String::from_utf8_lossy(&serialize(&mail)),
+            "Subject: x\r\nTo: y\r\n\r\n"
+        );
+
+        let mail = CowMail::try_from("Subject: x".as_bytes()).unwrap();
+        assert_eq!(mail.headers.len(), 1);
+        assert_eq!(mail.headers[0].get_value_raw(), b"x");
+        assert_eq!(mail.raw_body(), b"");
+        assert_eq!(String::from_utf8_lossy(&serialize(&mail)), "Subject: x\r\n");
+    }
+
+    // The header line is rebuilt from pointer offsets, not by searching for the
+    // key and value bytes, so a value identical to its key still lands at the
+    // right place.
+    #[test]
+    fn test_roundtrip_header_value_equal_to_key() {
+        for raw in [
+            "Test: Test\r\n\r\nbody\r\n",
+            "Test:Test\r\n\r\nbody\r\n",
+            "Test: Test\r\n Test\r\n\r\nbody\r\n",
+            "T: T\r\nT: T\r\n\r\nbody\r\n",
+        ] {
+            assert_roundtrip(raw);
+        }
+
+        let mail = CowMail::try_from("Test: Test\r\nTest:Test\r\n\r\nbody\r\n".as_bytes()).unwrap();
+        assert_eq!(mail.headers.len(), 2);
+        for header in &mail.headers {
+            assert_eq!(header.get_key_raw(), b"Test");
+            assert_eq!(header.get_value_raw(), b"Test");
+        }
+        assert_eq!(mail.headers[0].get_raw().as_ref(), b"Test: Test\r\n");
+        assert_eq!(mail.headers[1].get_raw().as_ref(), b"Test:Test\r\n");
+    }
+
+    // A header line that is nothing but a colon: both the key and the value are
+    // empty, and they sit at different offsets.
+    #[test]
+    fn test_roundtrip_header_colon_only() {
+        let raw = ":\r\nTo: y\r\n\r\nbody\r\n";
+        assert_roundtrip(raw);
+
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+        assert_eq!(mail.headers[0].get_key_raw(), b"");
+        assert_eq!(mail.headers[0].get_value_raw(), b"");
+        assert_eq!(mail.headers[0].get_raw().as_ref(), b":\r\n");
+    }

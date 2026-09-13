@@ -1,5 +1,7 @@
-use super::{Header, parse_header};
-use crate::CowMailError;
+use mailparse::MailHeader;
+
+use super::{Header, build_header};
+use crate::{CowMailError, extend_over_newline};
 
 pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     fn iter_headers(&'a self, key: &str) -> impl Iterator<Item = &'a H>;
@@ -93,29 +95,29 @@ impl<'a, H: Header<'a> + 'a> HeaderMap<'a, H> for Vec<H> {
     }
 }
 
+/// Rebuild the header lines mailparse has already scanned, so that a part's
+/// header block is only walked once. `parsed` has to be the headers of
+/// `raw_data`, so that their key and value slices point into it. Returns the
+/// headers and the index the body starts at.
+pub(crate) fn build_headers<'a, H: Header<'a>>(
+    raw_data: &'a [u8],
+    parsed: &[MailHeader<'a>],
+) -> Result<(Vec<H>, usize), CowMailError> {
+    let mut headers = Vec::with_capacity(parsed.len());
+    let mut line_end = 0;
+
+    for (ix, header) in parsed.iter().enumerate() {
+        let (header, end) = build_header(raw_data, header, parsed.get(ix + 1))?;
+        headers.push(header);
+        line_end = end;
+    }
+
+    // Whatever terminates the block: the blank line, or nothing at all when the
+    // message ends with its headers.
+    Ok((headers, extend_over_newline(raw_data, line_end)))
+}
 
 pub fn parse_headers<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(Vec<H>, usize), CowMailError> {
-    let mut headers: Vec<H> = Vec::new();
-    let mut ix = 0;
-    loop {
-        if ix >= raw_data.len() {
-            break;
-        } else if raw_data[ix] == b'\n' {
-            ix += 1;
-            break;
-        } else if raw_data[ix] == b'\r' {
-            if ix + 1 < raw_data.len() && raw_data[ix + 1] == b'\n' {
-                ix += 2;
-                break;
-            } else {
-                return Err(CowMailError::Generic(
-                    "Headers were followed by an unexpected lone CR character!".to_string(),
-                ));
-            }
-        }
-        let (header, ix_next) = parse_header(&raw_data[ix..])?;
-        headers.push(header);
-        ix += ix_next;
-    }
-    Ok((headers, ix))
+    let (parsed, _) = mailparse::parse_headers(raw_data)?;
+    build_headers(raw_data, &parsed)
 }
