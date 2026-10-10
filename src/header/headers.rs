@@ -10,6 +10,10 @@ use crate::{CowMailError, extend_over_newline};
 /// Implementors only have to hand out their headers; everything else is
 /// provided. Keys match case-insensitively throughout, and an `index` argument
 /// counts occurrences of `key`, not positions in the collection.
+///
+/// [`headers_mut`](Self::headers_mut) hands out a `&mut Vec<H>` rather than a slice, because
+/// inserting and removing go through it — the one constraint this trait puts on an implementor's
+/// storage. Implemented for `Vec<H>` and for [`CowMail`](crate::CowMail).
 pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     /// The headers, in the order they appear in the message.
     fn headers(&self) -> &[H];
@@ -18,6 +22,7 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     /// removing go through it.
     fn headers_mut(&mut self) -> &mut Vec<H>;
 
+    /// Every header with this key, in message order.
     fn iter_headers<'b>(&'b self, key: &str) -> impl Iterator<Item = &'b H>
     where
         H: 'b,
@@ -25,6 +30,7 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
         self.headers().iter().filter(move |h| h.key_eq(key))
     }
 
+    /// Every header with this key, mutably, in message order.
     fn iter_headers_mut<'b>(&'b mut self, key: &str) -> impl Iterator<Item = &'b mut H>
     where
         H: 'b,
@@ -32,7 +38,9 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
         self.headers_mut().iter_mut().filter(move |h| h.key_eq(key))
     }
 
-    /// Examples
+    /// The decoded value of every header with this key, in message order.
+    ///
+    /// # Examples
     /// ```
     ///     use email_message::{CowMail, HeaderMap};
     ///     let mail = CowMail::try_from(concat!(
@@ -53,15 +61,24 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
         self.iter_headers(key).map(|h| h.get_value())
     }
 
+    /// The first header with this key.
+    ///
+    /// Use [`iter_headers`](Self::iter_headers) when a key can occur more than once, as `Received`
+    /// does.
     fn find_header(&self, key: &str) -> Option<&H> {
         self.headers().iter().find(|h| h.key_eq(key))
     }
 
+    /// The first header with this key, mutably.
     fn find_header_mut(&mut self, key: &str) -> Option<&mut H> {
         self.headers_mut().iter_mut().find(|h| h.key_eq(key))
     }
 
-    /// Examples
+    /// The decoded value of the first header with this key.
+    ///
+    /// Unfolded and RFC 2047-decoded — see [`Header::get_value`](crate::Header::get_value).
+    ///
+    /// # Examples
     /// ```
     ///     use email_message::{CowMail, HeaderMap};
     ///     let mail = CowMail::try_from(concat!(
@@ -76,7 +93,16 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
         self.find_header(key).map(|h| h.get_value())
     }
 
-    /// Examples
+    /// Append a header, encoding `value` as needed.
+    ///
+    /// Duplicates are not checked for: adding a key that is already there leaves two of them. Use
+    /// [`replace_header`](Self::replace_header) to change an existing one.
+    ///
+    /// # Panics
+    ///
+    /// If `key` or `value` converts to an empty string.
+    ///
+    /// # Examples
     /// ```
     ///     use email_message::{CowMail, HeaderMap};
     ///     let mut mail = CowMail::default();
@@ -87,7 +113,16 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
         self.headers_mut().push(H::new(key, value))
     }
 
-    /// Examples
+    /// Insert a header at `index` in the header list, encoding `value` as needed.
+    ///
+    /// Unlike everywhere else in this trait, `index` is a position in the list, not a count of
+    /// occurrences of `key`. An index past the end appends.
+    ///
+    /// # Panics
+    ///
+    /// If `key` or `value` converts to an empty string.
+    ///
+    /// # Examples
     /// ```
     ///     use email_message::{CowMail, Header, HeaderMap};
     ///     let mut mail = CowMail::try_from(concat!(
@@ -108,7 +143,15 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
         headers.insert(index, header);
     }
 
-    /// Examples
+    /// Replace the value of the `index`th header with this key, counting from the first one.
+    ///
+    /// Does nothing when there is no such occurrence. The key keeps the spelling it had.
+    ///
+    /// # Panics
+    ///
+    /// If `value` converts to an empty string.
+    ///
+    /// # Examples
     /// ```
     ///     use email_message::{CowMail, Header, HeaderMap};
     ///     let mut mail = CowMail::try_from(concat!(
@@ -139,7 +182,15 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
         }
     }
 
-    /// Examples
+    /// Replace the value of every header with this key.
+    ///
+    /// Does nothing when there is none.
+    ///
+    /// # Panics
+    ///
+    /// If `value` converts to an empty string.
+    ///
+    /// # Examples
     /// ```
     ///     use email_message::{CowMail, Header, HeaderMap};
     ///     let mut mail = CowMail::try_from(concat!(
@@ -164,7 +215,11 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
         }
     }
 
-    /// Examples
+    /// Remove the `index`th header with this key, counting from the first one.
+    ///
+    /// Does nothing when there is no such occurrence.
+    ///
+    /// # Examples
     /// ```
     ///     use email_message::{CowMail, Header, HeaderMap};
     ///     let mut mail = CowMail::try_from(concat!(
@@ -192,7 +247,9 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
         }
     }
 
-    /// Examples
+    /// Remove every header with this key.
+    ///
+    /// # Examples
     /// ```
     ///     use email_message::{CowMail, Header, HeaderMap};
     ///     let mut mail = CowMail::try_from(concat!(
@@ -211,6 +268,9 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     }
 }
 
+/// Implemented for the header list itself, which is what makes `mail.headers.add_header(..)` work
+/// alongside `mail.add_header(..)` — useful when the borrow checker objects to going through the
+/// message.
 impl<'a, H: Header<'a> + 'a> HeaderMap<'a, H> for Vec<H> {
     fn headers(&self) -> &[H] {
         self
@@ -243,6 +303,27 @@ pub(crate) fn build_headers<'a, H: Header<'a>>(
     Ok((headers, extend_over_newline(raw_data, line_end)))
 }
 
+/// Parse a header block, borrowing from `raw_data`.
+///
+/// Returns the headers and the index the body starts at, i.e. just past the blank line that ends
+/// the block — or the end of the buffer, for a message that stops at its headers.
+///
+/// # Errors
+///
+/// [`CowMailError::MailParseError`] when [`mailparse::parse_headers`] rejects the block.
+///
+/// # Examples
+///
+/// ```
+/// use email_message::{CowHeader, HeaderMap, parse_headers};
+///
+/// let raw = b"Subject: Hi\r\nTo: nobody\r\n\r\nbody\r\n";
+/// let (headers, body_idx) = parse_headers::<CowHeader>(&raw[..]).unwrap();
+///
+/// assert_eq!(headers.len(), 2);
+/// assert_eq!(headers.find_value("Subject").unwrap(), "Hi");
+/// assert_eq!(&raw[body_idx..], b"body\r\n");
+/// ```
 pub fn parse_headers<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(Vec<H>, usize), CowMailError> {
     let (parsed, _) = mailparse::parse_headers(raw_data)?;
     build_headers(raw_data, &parsed)

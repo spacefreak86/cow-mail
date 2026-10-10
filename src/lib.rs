@@ -4,9 +4,7 @@
 #![warn(missing_debug_implementations)]
 #![warn(rustdoc::broken_intra_doc_links)]
 
-/// Body transfer-encoding: choosing one, and the types describing it.
 pub mod body;
-/// Header lines: the [`Header`] trait, [`CowHeader`](header::CowHeader), and header-value encoding.
 pub mod header;
 
 #[cfg(test)]

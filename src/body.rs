@@ -11,12 +11,21 @@ use std::mem;
 use email_encoding::body::{Encoding, base64};
 
 /// The `Content-Transfer-Encoding` of a body, as defined in RFC 2045 section 6.
+///
+/// [`Display`] writes the value as it belongs in the header. The values are case-insensitive per
+/// RFC 2045 section 6.1, which is why decoding lowercases the header before matching on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentTransferEncoding {
+    /// `7bit`: ASCII, short lines, no encoding applied. The default when no header is present, and
+    /// the only one [`crate::CowMail::set_content_raw`] leaves undeclared.
     SevenBit,
+    /// `8bit`: unencoded bytes above 127, in lines short enough to transmit.
     EightBit,
+    /// `quoted-printable`: mostly-ASCII content with the rest escaped as `=XX`.
     QuotedPrintable,
+    /// `base64`: the choice for binary content and for text that is largely non-ASCII.
     Base64,
+    /// `binary`: unencoded bytes with no line-length limit. Never chosen by [`encode`].
     Binary,
 }
 
@@ -39,7 +48,9 @@ impl Display for ContentTransferEncoding {
 /// always ends up as `base64`.
 #[derive(Debug, Clone)]
 pub enum BodyContent {
+    /// Valid UTF-8 text. Line endings are normalized to CRLF by [`encode`].
     Text(String),
+    /// Arbitrary bytes, always base64-encoded.
     Binary(Vec<u8>),
 }
 
@@ -79,6 +90,25 @@ impl From<BodyContent> for Vec<u8> {
 /// Encode `content`, choosing the most compact of `7bit`, `quoted-printable` and `base64`.
 ///
 /// Line endings of text content are normalized to CRLF.
+///
+/// # Examples
+///
+/// ```
+/// use email_message::{ContentTransferEncoding, body::encode};
+///
+/// // Plain ASCII needs no encoding at all.
+/// let (bytes, encoding) = encode("hello");
+/// assert_eq!(bytes, b"hello");
+/// assert_eq!(encoding, ContentTransferEncoding::SevenBit);
+///
+/// // Line endings are normalized on the way through.
+/// let (bytes, _) = encode("one\ntwo");
+/// assert_eq!(bytes, b"one\r\ntwo");
+///
+/// // Bytes are always base64.
+/// let (_, encoding) = encode(&b"\x89PNG\r\n\x1a\n"[..]);
+/// assert_eq!(encoding, ContentTransferEncoding::Base64);
+/// ```
 pub fn encode(content: impl Into<BodyContent>) -> (Vec<u8>, ContentTransferEncoding) {
     let mut content = content.into();
 

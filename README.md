@@ -85,4 +85,4 @@ assert!(mail.is_multipart());
 
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE).
+GPL-3.0. See the `LICENSE` file in the repository.
