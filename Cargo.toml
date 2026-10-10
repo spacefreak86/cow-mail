@@ -1,8 +1,13 @@
 [package]
-name = "email-message"
+name = "cow-mail"
 version = "0.0.1"
 authors = ["Thomas Oettli <spacefreak@noop.ch>"]
 edition = "2024"
+description = "Parse, modify and serialize email messages (RFC 5322/MIME) with copy-on-write, byte-exact round-trip"
+repository = "https://github.com/spacefreak86/cow-mail"
+license = "GPL-3.0-only"
+keywords = ["email", "mime", "rfc5322", "parser", "cow"]
+categories = ["email", "parser-implementations"]
 
 [profile.release]
 lto = true

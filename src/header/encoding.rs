@@ -41,7 +41,7 @@ fn encode(encode_buf: &mut String, writer: &mut EmailWriter) {
 /// # Examples
 ///
 /// ```
-/// use email_message::header::encode_header_value;
+/// use cow_mail::header::encode_header_value;
 ///
 /// // Plain text is left alone.
 /// assert_eq!(encode_header_value("Subject", "a test"), "a test");

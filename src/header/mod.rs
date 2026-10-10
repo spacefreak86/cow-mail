@@ -173,7 +173,7 @@ pub trait Header<'a>: Clone + Display {
     /// # Examples
     ///
     /// ```
-    /// use email_message::{CowHeader, Header};
+    /// use cow_mail::{CowHeader, Header};
     ///
     /// let header = CowHeader::new("Content-Type", "text/plain; charset=utf-8");
     /// assert_eq!(header.get_param("charset").unwrap(), "utf-8");
@@ -262,7 +262,7 @@ impl<'a, T: Header<'a>> From<&'_ T> for RFC2045HeaderValue<String> {
 /// # Examples
 ///
 /// ```
-/// use email_message::{CowHeader, Header};
+/// use cow_mail::{CowHeader, Header};
 ///
 /// let header = CowHeader::new("Subject", "Grüße");
 ///
@@ -430,7 +430,7 @@ fn build_header<'a, H: Header<'a>>(
 /// # Examples
 ///
 /// ```
-/// use email_message::{CowHeader, Header, parse_header};
+/// use cow_mail::{CowHeader, Header, parse_header};
 ///
 /// let raw = b"Subject: Hi\r\nTo: nobody\r\n";
 /// let (header, next) = parse_header::<CowHeader>(&raw[..]).unwrap();

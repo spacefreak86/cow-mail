@@ -311,7 +311,7 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     /// # Examples
     ///
     /// ```
-    /// use email_message::{CowMail, Mail};
+    /// use cow_mail::{CowMail, Mail};
     ///
     /// let raw = b"Content-Type: text/plain\r\n\
     ///             Content-Transfer-Encoding: base64\r\n\
@@ -448,7 +448,7 @@ enum BodyCheckStatus {
 /// All three are empty for a part that was built rather than parsed.
 ///
 /// ```
-/// use email_message::{CowMail, HeaderMap, Mail};
+/// use cow_mail::{CowMail, HeaderMap, Mail};
 ///
 /// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
 /// let mut mail = CowMail::try_from(&raw[..]).unwrap();
@@ -466,7 +466,7 @@ enum BodyCheckStatus {
 /// # Examples
 ///
 /// ```
-/// use email_message::{CowMail, Header, HeaderMap, Mail};
+/// use cow_mail::{CowMail, Header, HeaderMap, Mail};
 ///
 /// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
 /// let mut mail = CowMail::try_from(&raw[..]).unwrap();
@@ -590,7 +590,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// # Examples
     ///
     /// ```
-    /// use email_message::{CowMail, HeaderMap, Mail, MediaType, names};
+    /// use cow_mail::{CowMail, HeaderMap, Mail, MediaType, names};
     ///
     /// let mut part = CowMail::default();
     /// part.set_content("<p>hi</p>", Some(MediaType::new(names::TEXT, names::HTML)));
@@ -758,7 +758,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// # Examples
     ///
     /// ```
-    /// use email_message::{BodyType, CowMail, Mail};
+    /// use cow_mail::{BodyType, CowMail, Mail};
     ///
     /// let raw = b"Content-Type: multipart/alternative; boundary=\"b\"\r\n\
     ///             \r\n\
@@ -853,7 +853,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// # Examples
     ///
     /// ```
-    /// use email_message::{CowMail, HeaderMap, Mail};
+    /// use cow_mail::{CowMail, HeaderMap, Mail};
     ///
     /// let mut mail = CowMail::default();
     /// mail.add_header("Subject", "Hi");
@@ -917,7 +917,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// # Examples
     ///
     /// ```
-    /// use email_message::{CowMail, HeaderMap, Mail, MediaType, names};
+    /// use cow_mail::{CowMail, HeaderMap, Mail, MediaType, names};
     ///
     /// let mut mail = CowMail::default();
     /// mail.set_text_body("see attached").unwrap();
@@ -1087,7 +1087,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// # Examples
     ///
     /// ```
-    /// use email_message::{BodyType, CowMail, HeaderMap, Mail};
+    /// use cow_mail::{BodyType, CowMail, HeaderMap, Mail};
     ///
     /// let mut mail = CowMail::default();
     /// mail.add_header("Subject", "Hi");
@@ -1169,7 +1169,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// # Examples
     ///
     /// ```
-    /// use email_message::CowMail;
+    /// use cow_mail::CowMail;
     ///
     /// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
     /// let mail = CowMail::try_from(&raw[..]).unwrap();
@@ -1242,7 +1242,7 @@ impl<'a> TryFrom<&'a [u8]> for CowMail<'a, CowHeader<'a>> {
 ///
 /// ```
 /// use std::io::Read;
-/// use email_message::{CowMail, CowMailReader};
+/// use cow_mail::{CowMail, CowMailReader};
 ///
 /// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
 /// let mail = CowMail::try_from(&raw[..]).unwrap();
@@ -1343,7 +1343,7 @@ impl std::io::Read for CowMailReader<'_> {
 /// # Examples
 ///
 /// ```
-/// use email_message::{CowHeader, CowMail, HeaderMap, parse_mail};
+/// use cow_mail::{CowHeader, CowMail, HeaderMap, parse_mail};
 ///
 /// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
 /// let mail: CowMail<CowHeader> = parse_mail(&raw[..]).unwrap();

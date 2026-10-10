@@ -42,7 +42,7 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     ///
     /// # Examples
     /// ```
-    ///     use email_message::{CowMail, HeaderMap};
+    ///     use cow_mail::{CowMail, HeaderMap};
     ///     let mail = CowMail::try_from(concat!(
     ///             "Subject: Test\n",
     ///             "Subject: Test1\n",
@@ -80,7 +80,7 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     ///
     /// # Examples
     /// ```
-    ///     use email_message::{CowMail, HeaderMap};
+    ///     use cow_mail::{CowMail, HeaderMap};
     ///     let mail = CowMail::try_from(concat!(
     ///             "Subject: Test\n",
     ///             "Subject: Test1",
@@ -104,7 +104,7 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     ///
     /// # Examples
     /// ```
-    ///     use email_message::{CowMail, HeaderMap};
+    ///     use cow_mail::{CowMail, HeaderMap};
     ///     let mut mail = CowMail::default();
     ///     mail.add_header("Subject", "Test");
     ///     assert_eq!(mail.find_value("Subject").unwrap(), "Test");
@@ -124,7 +124,7 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     ///
     /// # Examples
     /// ```
-    ///     use email_message::{CowMail, Header, HeaderMap};
+    ///     use cow_mail::{CowMail, Header, HeaderMap};
     ///     let mut mail = CowMail::try_from(concat!(
     ///             "Subject: Test\n",
     ///             "To: \"John Doe\" <john.doe@example.com>\n",
@@ -153,7 +153,7 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     ///
     /// # Examples
     /// ```
-    ///     use email_message::{CowMail, Header, HeaderMap};
+    ///     use cow_mail::{CowMail, Header, HeaderMap};
     ///     let mut mail = CowMail::try_from(concat!(
     ///             "Subject: Test1\n",
     ///             "To: \"John Doe\" <john.doe@example.com>\n",
@@ -192,7 +192,7 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     ///
     /// # Examples
     /// ```
-    ///     use email_message::{CowMail, Header, HeaderMap};
+    ///     use cow_mail::{CowMail, Header, HeaderMap};
     ///     let mut mail = CowMail::try_from(concat!(
     ///             "Subject: Test\n",
     ///             "To: \"John Doe\" <john.doe@example.com>\n",
@@ -221,7 +221,7 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     ///
     /// # Examples
     /// ```
-    ///     use email_message::{CowMail, Header, HeaderMap};
+    ///     use cow_mail::{CowMail, Header, HeaderMap};
     ///     let mut mail = CowMail::try_from(concat!(
     ///             "Subject: Test1\n",
     ///             "To: \"John Doe\" <john.doe@example.com>\n",
@@ -251,7 +251,7 @@ pub trait HeaderMap<'a, H: Header<'a> + 'a> {
     ///
     /// # Examples
     /// ```
-    ///     use email_message::{CowMail, Header, HeaderMap};
+    ///     use cow_mail::{CowMail, Header, HeaderMap};
     ///     let mut mail = CowMail::try_from(concat!(
     ///             "Subject: Test1\n",
     ///             "To: \"John Doe\" <john.doe@example.com>\n",
@@ -315,7 +315,7 @@ pub(crate) fn build_headers<'a, H: Header<'a>>(
 /// # Examples
 ///
 /// ```
-/// use email_message::{CowHeader, HeaderMap, parse_headers};
+/// use cow_mail::{CowHeader, HeaderMap, parse_headers};
 ///
 /// let raw = b"Subject: Hi\r\nTo: nobody\r\n\r\nbody\r\n";
 /// let (headers, body_idx) = parse_headers::<CowHeader>(&raw[..]).unwrap();

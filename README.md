@@ -1,4 +1,4 @@
-# email-message
+# cow-mail
 
 A Rust library for parsing, modifying and serializing email messages (RFC 5322 / MIME).
 
@@ -14,7 +14,7 @@ messages and for anything that has to pass a message through unchanged.
 ## Quickstart
 
 ```rust
-use email_message::{CowMail, HeaderMap, Mail};
+use cow_mail::{CowMail, HeaderMap, Mail};
 
 let raw = b"Subject: Hello\r\n\
             Content-Type: text/plain\r\n\
@@ -31,7 +31,7 @@ assert_eq!(mail.get_content().unwrap(), "Hi there");
 assert_eq!(mail.serialize().concat(), raw.to_vec());
 
 // Modify it.
-mail.add_header("X-Mailer", "email-message");
+mail.add_header("X-Mailer", "cow-mail");
 mail.set_text_body("Hi again").unwrap();
 
 let out: Vec<u8> = mail.serialize().concat();
@@ -41,7 +41,7 @@ assert!(out.starts_with(b"Subject: Hello"));
 Building a multipart message from scratch:
 
 ```rust
-use email_message::{CowMail, HeaderMap, Mail, MediaType, names};
+use cow_mail::{CowMail, HeaderMap, Mail, MediaType, names};
 
 let mut mail = CowMail::default();
 mail.add_header("Subject", "Report");

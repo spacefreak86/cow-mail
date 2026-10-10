@@ -94,7 +94,7 @@ impl From<BodyContent> for Vec<u8> {
 /// # Examples
 ///
 /// ```
-/// use email_message::{ContentTransferEncoding, body::encode};
+/// use cow_mail::{ContentTransferEncoding, body::encode};
 ///
 /// // Plain ASCII needs no encoding at all.
 /// let (bytes, encoding) = encode("hello");
