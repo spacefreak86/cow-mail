@@ -310,7 +310,7 @@ pub(crate) fn build_headers<'a, H: Header<'a>>(
 ///
 /// # Errors
 ///
-/// [`CowMailError::Parse`] when [`mailparse::parse_headers`] rejects the block.
+/// [`CowMailError::Parse`] when the block is malformed.
 ///
 /// # Examples
 ///

@@ -191,7 +191,7 @@ pub trait Header<'a>: Clone + Display {
     ///
     /// The whole value is rewritten, which has two visible consequences: the parameters come back
     /// in alphabetical order, and the mimetype is lowercased — both because the value round-trips
-    /// through [`mailparse::parse_content_type`]. Parameter values are always quoted.
+    /// through the parser. Parameter values are always quoted.
     ///
     /// # Panics
     ///
@@ -422,7 +422,7 @@ fn build_header<'a, H: Header<'a>>(
 ///
 /// # Errors
 ///
-/// [`CowMailError::Parse`] when [`mailparse::parse_header`] rejects the line.
+/// [`CowMailError::Parse`] when the line is not a header.
 ///
 /// # Examples
 ///

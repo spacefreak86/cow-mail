@@ -1620,14 +1620,14 @@ impl std::io::Read for CowMailReader<'_> {
 /// Generic over the header representation; [`CowMail::try_from`] is the same thing fixed to
 /// [`CowHeader`] and is the usual way in.
 ///
-/// The MIME structure is decided by [`mailparse::parse_mail`] — boundary matching,
-/// `multipart/digest` propagation, and its limit on nesting depth. What this adds is the
-/// separators mailparse discards, which is what makes [`CowMail::serialize`] byte-exact.
+/// The MIME structure — boundary matching, `multipart/digest` propagation, the limit on nesting
+/// depth — is decided by the parser the crate uses internally. What this adds is the separators
+/// that parser discards, which is what makes [`CowMail::serialize`] byte-exact.
 ///
 /// # Errors
 ///
-/// [`CowMailError::Parse`] when mailparse rejects the message; the other variants signal
-/// a broken invariant of the bridge to mailparse and should not occur.
+/// [`CowMailError::Parse`] when the message is malformed; the other variants signal a broken
+/// invariant of the bridge to the parser and should not occur.
 ///
 /// # Examples
 ///
