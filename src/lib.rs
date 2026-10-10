@@ -512,6 +512,16 @@ impl<'a> Default for CowMail<'a, CowHeader<'a>> {
 }
 
 impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
+    /// An empty part: no headers, no body, no subparts.
+    ///
+    /// Borrows nothing, so the returned value is valid for any lifetime. [`end_bytes`] starts out
+    /// empty — there is nothing to terminate yet — and [`delimiter_end`] CRLF, for the case the
+    /// part is added to a container.
+    ///
+    /// Use [`CowMail::default`] to get one with the default header type, [`CowHeader`].
+    ///
+    /// [`end_bytes`]: Self::end_bytes
+    /// [`delimiter_end`]: Self::delimiter_end
     pub fn new() -> Self {
         Self {
             bytes_orig: &[],
@@ -535,6 +545,29 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         PartInfo { ctype, media }
     }
 
+    /// Replace the content of this part with text.
+    ///
+    /// Drops the existing content first — all `Content-*` headers, the body and the subparts, see
+    /// [`Mail::clear_content`] — then writes `content`, declaring `ctype` (`text/plain` when
+    /// `None`) and whatever `Content-Transfer-Encoding` [`body::encode`] picked. A `charset=UTF-8`
+    /// parameter is added for non-ASCII content unless `ctype` already carries a charset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use email_message::{CowMail, HeaderMap, Mail, MediaType, names};
+    ///
+    /// let mut part = CowMail::default();
+    /// part.set_content("<p>hi</p>", Some(MediaType::new(names::TEXT, names::HTML)));
+    ///
+    /// assert_eq!(part.content_type().mimetype, "text/html");
+    /// assert_eq!(part.get_content().unwrap(), "<p>hi</p>");
+    ///
+    /// // Non-ASCII text gets a charset, and an encoding that survives transport.
+    /// part.set_content("Grüße", None);
+    /// assert_eq!(part.find_value("Content-Type").unwrap(), "text/plain; charset=UTF-8");
+    /// assert_eq!(part.get_content().unwrap(), "Grüße");
+    /// ```
     pub fn set_content<T: ToString>(&mut self, content: T, ctype: Option<MediaType>) {
         let content = content.to_string();
 
@@ -546,6 +579,12 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         self.set_content_raw(content, Some(ctype));
     }
 
+    /// Replace the content of this part with bytes.
+    ///
+    /// Like [`set_content`](Self::set_content), but without the charset handling, and `ctype` is
+    /// left off entirely when `None`. Binary content always ends up base64-encoded; pass a
+    /// [`BodyContent::Text`] (or a `&str`/`String`, which convert into one) to allow the more
+    /// compact encodings.
     pub fn set_content_raw<B: Into<BodyContent>>(&mut self, content: B, ctype: Option<MediaType>) {
         self.clear_content();
 
@@ -562,18 +601,35 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         self.end_bytes = b"\r\n";
     }
 
+    /// The filename this part declares, if any.
+    ///
+    /// The `filename` parameter of `Content-Disposition`, falling back to the deprecated `name`
+    /// parameter of `Content-Type`.
     pub fn get_filename(&self) -> Option<String> {
         self.content_disposition()
             .and_then(|disp| disp.params.get("filename").cloned())
             .or_else(|| self.content_type().params.get("name").cloned())
     }
 
+    /// The `boundary` parameter of this part's `Content-Type` header, if it has one.
+    ///
+    /// Reads the header directly, so it is `None` for a part with no `Content-Type` — unlike
+    /// [`Mail::message_type`], which falls back to the default content type.
     pub fn get_boundary(&self) -> Option<String> {
         self.headers
             .find_header("Content-Type")
             .and_then(|h| h.get_param("boundary"))
     }
 
+    /// Set the `boundary` parameter of this part's `Content-Type` header.
+    ///
+    /// The subparts keep serializing correctly afterwards, because each one stores only the *tail*
+    /// of its delimiter line, not the boundary — see [`delimiter_end`](Self::delimiter_end).
+    ///
+    /// # Errors
+    ///
+    /// [`CowMailError::MissingContentTypeHeader`] when the part has no `Content-Type` header to
+    /// put the parameter on. Call [`make_mixed`](Self::make_mixed) or one of its siblings first.
     pub fn set_boundary<T: ToString>(&mut self, boundary: T) -> Result<(), CowMailError> {
         let header = self
             .headers
@@ -656,11 +712,45 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
     }
 
+    /// The part holding the `text/plain` or `text/html` body, searching the whole subpart tree.
+    ///
+    /// A part qualifies when it is a leaf of content type `text/plain` or `text/html` matching
+    /// `bodytype` and is not an attachment. Containers are searched depth-first in order, except
+    /// that a `multipart/related` naming a root part with its `start` parameter — matched against
+    /// the subparts' `Content-ID` headers — searches only that one. Returns `self` when this part
+    /// is itself the body.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use email_message::{BodyType, CowMail, Mail};
+    ///
+    /// let raw = b"Content-Type: multipart/alternative; boundary=\"b\"\r\n\
+    ///             \r\n\
+    ///             --b\r\n\
+    ///             Content-Type: text/plain\r\n\
+    ///             \r\n\
+    ///             plain\r\n\
+    ///             --b\r\n\
+    ///             Content-Type: text/html\r\n\
+    ///             \r\n\
+    ///             <p>html</p>\r\n\
+    ///             --b--\r\n";
+    ///
+    /// let mail = CowMail::try_from(&raw[..]).unwrap();
+    /// let html = mail.get_body_part(BodyType::HTML).unwrap();
+    /// assert_eq!(html.get_content().unwrap(), "<p>html</p>");
+    /// ```
     pub fn get_body_part(&self, bodytype: BodyType) -> Option<&CowMail<'a, H>> {
         let path = self.find_body_path(bodytype)?;
         Some(self.get_part_at_path(&path))
     }
 
+    /// The part holding the `text/plain` or `text/html` body, mutably.
+    ///
+    /// Same search as [`get_body_part`](Self::get_body_part). Modifying the part this returns is
+    /// how [`set_text_body`](Self::set_text_body) and [`set_html_body`](Self::set_html_body)
+    /// update an existing body.
     pub fn get_body_part_mut(&mut self, bodytype: BodyType) -> Option<&mut CowMail<'a, H>> {
         let path = self.find_body_path(bodytype)?;
         Some(self.get_part_at_path_mut(&path))
@@ -708,14 +798,50 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         self.subparts.push(subpart);
     }
 
+    /// Turn this part into a `multipart/mixed` container holding its former content.
+    ///
+    /// All `Content-*` headers, the body bytes, any existing subparts and
+    /// [`end_bytes`](Self::end_bytes) move into a new first subpart; this part keeps its remaining
+    /// headers and gains `MIME-Version: 1.0` (if absent) plus a `Content-Type` of
+    /// `multipart/mixed` with `boundary`, or a fresh [`generate_boundary`] when that is `None`.
+    ///
+    /// Does nothing when this part already is a `multipart/mixed`, which is what makes
+    /// [`add_attachment`](Self::add_attachment) work on a container as well as on a leaf.
     pub fn make_mixed(&mut self, boundary: Option<String>) {
         self.make_multipart(MIXED, boundary)
     }
 
+    /// Turn this part into a `multipart/alternative` container holding its former content.
+    ///
+    /// Same move semantics and the same no-op rule as [`make_mixed`](Self::make_mixed).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use email_message::{CowMail, HeaderMap, Mail};
+    ///
+    /// let mut mail = CowMail::default();
+    /// mail.add_header("Subject", "Hi");
+    /// mail.set_content("plain", None);
+    ///
+    /// mail.make_alternative(Some("boundary".to_string()));
+    ///
+    /// // The content moved down one level; Subject stayed up top.
+    /// assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+    /// assert_eq!(mail.find_value("Subject").unwrap(), "Hi");
+    /// assert_eq!(mail.subparts[0].get_content().unwrap(), "plain");
+    ///
+    /// // Calling it again is a no-op: no extra nesting.
+    /// mail.make_alternative(None);
+    /// assert_eq!(mail.subparts.len(), 1);
+    /// ```
     pub fn make_alternative(&mut self, boundary: Option<String>) {
         self.make_multipart(ALTERNATIVE, boundary)
     }
 
+    /// Turn this part into a `multipart/related` container holding its former content.
+    ///
+    /// Same move semantics and the same no-op rule as [`make_mixed`](Self::make_mixed).
     pub fn make_related(&mut self, boundary: Option<String>) {
         self.make_multipart(RELATED, boundary)
     }
@@ -727,6 +853,11 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         self.subparts.push(subpart);
     }
 
+    /// Add `subpart` as a related part — an inline image, say — wrapping this part into a
+    /// `multipart/related` first if it is not one already.
+    ///
+    /// `subpart` gains `Content-Disposition: inline` unless it already declares a disposition.
+    /// Give it a `Content-ID` header if the body is going to reference it with a `cid:` URL.
     pub fn add_related(&mut self, mut subpart: CowMail<'a, H>) {
         if subpart.headers.find_header("Content-Disposition").is_none() {
             subpart.headers.add_header("Content-Disposition", "inline");
@@ -734,10 +865,40 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         self.add_multipart(subpart, RELATED)
     }
 
+    /// Add `subpart` as an alternative rendering of this part's content, wrapping this part into a
+    /// `multipart/alternative` first if it is not one already.
+    ///
+    /// Alternatives are ordered least to most preferred, per RFC 2046 section 5.1.4, so the part
+    /// added last is the one a client should prefer.
     pub fn add_alternative(&mut self, subpart: CowMail<'a, H>) {
         self.add_multipart(subpart, ALTERNATIVE)
     }
 
+    /// Add `subpart` as an attachment, wrapping this part into a `multipart/mixed` first if it is
+    /// not one already.
+    ///
+    /// `subpart` gains `Content-Disposition: attachment` unless it already declares a disposition.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use email_message::{CowMail, HeaderMap, Mail, MediaType, names};
+    ///
+    /// let mut mail = CowMail::default();
+    /// mail.set_text_body("see attached").unwrap();
+    ///
+    /// let mut attachment = CowMail::new();
+    /// attachment.set_content_raw(
+    ///     &b"\x89PNG\r\n\x1a\n"[..],
+    ///     Some(MediaType::new(names::IMAGE, names::PNG)),
+    /// );
+    /// mail.add_attachment(attachment);
+    ///
+    /// assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+    /// let last = mail.subparts.last().unwrap();
+    /// assert!(last.is_attachment());
+    /// assert_eq!(last.find_value("Content-Transfer-Encoding").unwrap(), "base64");
+    /// ```
     pub fn add_attachment(&mut self, mut subpart: CowMail<'a, H>) {
         if subpart.headers.find_header("Content-Disposition").is_none() {
             subpart.headers.add_header("Content-Disposition", "attachment");
@@ -849,19 +1010,71 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         Ok(())
     }
 
+    /// Set the `text/plain` body of the message, wherever it belongs in the structure.
+    ///
+    /// Three cases, in order:
+    ///
+    /// 1. A plain body already exists — it is updated in place.
+    /// 2. The message has no text body at all — the part is wrapped into a `multipart/mixed` if it
+    ///    is not already a multipart, and the new body is inserted as the first subpart.
+    /// 3. Only an HTML body exists — the two are paired in a `multipart/alternative`, created
+    ///    where the structure requires it.
+    ///
+    /// The plain part is inserted before the HTML one, per RFC 2046 section 5.1.4.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible; the [`Result`] is part of the signature so that future structural
+    /// checks do not break callers.
     pub fn set_text_body<T: ToString>(&mut self, content: T) -> Result<(), CowMailError> {
         self.set_body_part(content, BodyType::PLAIN)
     }
 
+    /// Set the `text/html` body of the message, wherever it belongs in the structure.
+    ///
+    /// The same three cases as [`set_text_body`](Self::set_text_body), except that the HTML part is
+    /// appended rather than inserted first.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible; see [`set_text_body`](Self::set_text_body).
     pub fn set_html_body<T: ToString>(&mut self, content: T) -> Result<(), CowMailError> {
         self.set_body_part(content, BodyType::HTML)
     }
 
+    /// Set both bodies at once: [`set_text_body`](Self::set_text_body) followed by
+    /// [`set_html_body`](Self::set_html_body).
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible; see [`set_text_body`](Self::set_text_body).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use email_message::{BodyType, CowMail, HeaderMap, Mail};
+    ///
+    /// let mut mail = CowMail::default();
+    /// mail.add_header("Subject", "Hi");
+    /// mail.set_body("plain", "<p>html</p>").unwrap();
+    ///
+    /// assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+    /// assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "plain");
+    /// assert_eq!(mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(), "<p>html</p>");
+    ///
+    /// // Plain comes first.
+    /// assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+    /// ```
     pub fn set_body<T: ToString>(&mut self, text: T, html: T) -> Result<(), CowMailError> {
         self.set_text_body(text)?;
         self.set_html_body(html)
     }
 
+    /// The header block of this part, terminated by the blank line that separates it from the body.
+    ///
+    /// One chunk per header, borrowed from the original message where the header was not modified.
+    /// The blank line follows the line ending of the header right before it, so an untouched
+    /// LF-terminated message keeps LF while rewritten headers use CRLF.
     pub fn serialize_headers(&self) -> Vec<Cow<'_, [u8]>> {
         let mut res: Vec<Cow<[u8]>> = self.headers.iter().flat_map(|h| h.serialize()).collect();
         // The blank line between headers and body follows the line ending of the
@@ -876,6 +1089,12 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         res
     }
 
+    /// The body of this part: the raw bytes for a leaf, or preamble, delimiter lines, serialized
+    /// subparts and closing delimiter for a container.
+    ///
+    /// A part that declares a boundary but has no subparts — because the boundary never appeared
+    /// in the message — is written out as the body it was parsed with; no closing delimiter is
+    /// invented for it.
     pub fn serialize_body(&self) -> Vec<Cow<'_, [u8]>> {
         match self.message_type() {
             MessageType::MultiPart(boundary) if !self.subparts.is_empty() => {
@@ -901,6 +1120,27 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         }
     }
 
+    /// The whole part as a list of chunks: [`serialize_headers`] followed by [`serialize_body`].
+    ///
+    /// Chunks rather than one buffer, so that everything untouched stays borrowed from the message
+    /// this part was parsed from and is never copied. Use `.concat()` for a single `Vec<u8>`,
+    /// [`CowMailReader`] to stream it, or write the chunks out one by one.
+    ///
+    /// For a message that was parsed and not modified, the result is byte-identical to the input.
+    ///
+    /// [`serialize_headers`]: Self::serialize_headers
+    /// [`serialize_body`]: Self::serialize_body
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use email_message::CowMail;
+    ///
+    /// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
+    /// let mail = CowMail::try_from(&raw[..]).unwrap();
+    ///
+    /// assert_eq!(mail.serialize().concat(), raw.to_vec());
+    /// ```
     pub fn serialize(&self) -> Vec<Cow<'_, [u8]>> {
         let mut res = self.serialize_headers();
         res.append(&mut self.serialize_body());
@@ -954,6 +1194,34 @@ impl<'a> TryFrom<&'a [u8]> for CowMail<'a, CowHeader<'a>> {
     }
 }
 
+/// A [`std::io::Read`] over a serialized message, without building it in memory first.
+///
+/// Walks the chunks of [`CowMail::serialize`] in order, so the message is copied only into the
+/// caller's buffer. Create one with [`CowMailReader::new`] or `CowMailReader::from(&mail)`, and
+/// restrict it to one half with [`skip_headers`] or [`skip_body`].
+///
+/// [`skip_headers`]: Self::skip_headers
+/// [`skip_body`]: Self::skip_body
+///
+/// # Examples
+///
+/// ```
+/// use std::io::Read;
+/// use email_message::{CowMail, CowMailReader};
+///
+/// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
+/// let mail = CowMail::try_from(&raw[..]).unwrap();
+///
+/// let mut out = Vec::new();
+/// CowMailReader::new(&mail).read_to_end(&mut out).unwrap();
+/// assert_eq!(out, raw.to_vec());
+///
+/// let mut reader = CowMailReader::new(&mail);
+/// reader.skip_headers();
+/// let mut body = String::new();
+/// reader.read_to_string(&mut body).unwrap();
+/// assert_eq!(body, "body\r\n");
+/// ```
 pub struct CowMailReader<'a> {
     headers: Box<dyn Iterator<Item = Cow<'a, [u8]>> + 'a>,
     body: Box<dyn Iterator<Item = Cow<'a, [u8]>> + 'a>,
@@ -961,14 +1229,21 @@ pub struct CowMailReader<'a> {
 }
 
 impl<'a> CowMailReader<'a> {
+    /// A reader over `msg`, headers first, then the body.
+    ///
+    /// `msg` is borrowed for as long as the reader lives.
     pub fn new<H: Header<'a>>(msg: &'a CowMail<'a, H>) -> CowMailReader<'a> {
         CowMailReader::from(msg)
     }
 
+    /// Drop the headers from what is left to read, so only the body comes out.
+    ///
+    /// Has no effect once reading has moved past the headers.
     pub fn skip_headers(&mut self) {
         self.headers = Box::new(std::iter::empty());
     }
 
+    /// Drop the body from what is left to read, so only the headers come out.
     pub fn skip_body(&mut self) {
         self.body = Box::new(std::iter::empty());
     }
@@ -1016,6 +1291,29 @@ impl std::io::Read for CowMailReader<'_> {
     }
 }
 
+/// Parse a message, borrowing from `raw_data`.
+///
+/// Generic over the header representation; [`CowMail::try_from`] is the same thing fixed to
+/// [`CowHeader`] and is the usual way in.
+///
+/// The MIME structure is decided by [`mailparse::parse_mail`] — boundary matching,
+/// `multipart/digest` propagation, and its limit on nesting depth. What this adds is the
+/// separators mailparse discards, which is what makes [`CowMail::serialize`] byte-exact.
+///
+/// # Errors
+///
+/// [`CowMailError::MailParseError`] when mailparse rejects the message; the other variants signal
+/// a broken invariant of the bridge to mailparse and should not occur.
+///
+/// # Examples
+///
+/// ```
+/// use email_message::{CowHeader, CowMail, HeaderMap, parse_mail};
+///
+/// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
+/// let mail: CowMail<CowHeader> = parse_mail(&raw[..]).unwrap();
+/// assert_eq!(mail.find_value("Subject").unwrap(), "Hi");
+/// ```
 pub fn parse_mail<'a, H: Header<'a> + 'a>(raw_data: &'a [u8]) -> Result<CowMail<'a, H>, CowMailError> {
     let parsed = mailparse::parse_mail(raw_data)?;
     build_mail(raw_data, &parsed, false)
