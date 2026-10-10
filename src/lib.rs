@@ -1470,6 +1470,28 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         res.append(&mut self.serialize_body());
         res
     }
+
+    /// A [`CowMailReader`] over this message, headers first, then the body.
+    ///
+    /// Same as `CowMailReader::from(&mail)`, from the other side. The message is borrowed for as
+    /// long as the reader lives, so it cannot be modified in the meantime.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::io::Read;
+    /// use cow_mail::CowMail;
+    ///
+    /// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
+    /// let mail = CowMail::try_from(&raw[..]).unwrap();
+    ///
+    /// let mut out = Vec::new();
+    /// mail.get_reader().read_to_end(&mut out).unwrap();
+    /// assert_eq!(out, raw);
+    /// ```
+    pub fn get_reader(&'a self) -> CowMailReader<'a> {
+        CowMailReader::from(self)
+    }
 }
 
 impl<'a, H: Header<'a> + 'a> HeaderMap<'a, H> for CowMail<'a, H> {
@@ -1521,7 +1543,7 @@ impl<'a> TryFrom<&'a [u8]> for CowMail<'a, CowHeader<'a>> {
 /// A [`std::io::Read`] over a serialized message, without building it in memory first.
 ///
 /// Walks the chunks of [`CowMail::serialize`] in order, so the message is copied only into the
-/// caller's buffer. Create one with [`CowMailReader::new`] or `CowMailReader::from(&mail)`, and
+/// caller's buffer. Create one with [`CowMail::get_reader`] or `CowMailReader::from(&mail)`, and
 /// restrict it to one half with [`skip_headers`] or [`skip_body`].
 ///
 /// [`skip_headers`]: Self::skip_headers
@@ -1531,16 +1553,16 @@ impl<'a> TryFrom<&'a [u8]> for CowMail<'a, CowHeader<'a>> {
 ///
 /// ```
 /// use std::io::Read;
-/// use cow_mail::{CowMail, CowMailReader};
+/// use cow_mail::CowMail;
 ///
 /// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
 /// let mail = CowMail::try_from(&raw[..]).unwrap();
 ///
 /// let mut out = Vec::new();
-/// CowMailReader::new(&mail).read_to_end(&mut out).unwrap();
+/// mail.get_reader().read_to_end(&mut out).unwrap();
 /// assert_eq!(out, raw.to_vec());
 ///
-/// let mut reader = CowMailReader::new(&mail);
+/// let mut reader = mail.get_reader();
 /// reader.skip_headers();
 /// let mut body = String::new();
 /// reader.read_to_string(&mut body).unwrap();
@@ -1553,13 +1575,6 @@ pub struct CowMailReader<'a> {
 }
 
 impl<'a> CowMailReader<'a> {
-    /// A reader over `msg`, headers first, then the body.
-    ///
-    /// `msg` is borrowed for as long as the reader lives.
-    pub fn new<H: Header<'a>>(msg: &'a CowMail<'a, H>) -> CowMailReader<'a> {
-        CowMailReader::from(msg)
-    }
-
     /// Drop the headers from what is left to read, so only the body comes out.
     ///
     /// Has no effect once reading has moved past the headers.
