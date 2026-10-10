@@ -1,3 +1,13 @@
+//! Header lines.
+//!
+//! A header is abstracted by the [`Header`] trait, which is generic over the storage so that a
+//! message can be parsed into whatever representation the caller needs. [`CowHeader`] is the
+//! default implementation: it keeps the raw line — key, separator, value and trailing newline —
+//! as a [`Cow`], and becomes owned only when the value is changed.
+//!
+//! [`HeaderMap`] is the collection side: finding, iterating and editing headers by key. It is
+//! implemented for `Vec<H>` and for [`CowMail`](crate::CowMail).
+
 mod encoding;
 mod headers;
 
@@ -255,8 +265,7 @@ fn build_header<'a, H: Header<'a>>(
     next: Option<&MailHeader<'a>>,
 ) -> Result<(H, usize), CowMailError> {
     let offset_of = |bytes: &[u8]| {
-        offset_in(raw_data, bytes)
-            .ok_or_else(|| CowMailError::Generic("header is not a slice of its part".to_string()))
+        offset_in(raw_data, bytes).ok_or(CowMailError::HeaderNotASubslice)
     };
 
     let key = parsed.get_key_raw();

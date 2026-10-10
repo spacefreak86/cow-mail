@@ -1,40 +1,83 @@
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
+#![warn(rustdoc::broken_intra_doc_links)]
 
+/// Body transfer-encoding: choosing one, and the types describing it.
 pub mod body;
+/// Header lines: the [`Header`] trait, [`CowHeader`](header::CowHeader), and header-value encoding.
 pub mod header;
 
 #[cfg(test)]
 mod tests;
 
 pub use body::{BodyContent, ContentTransferEncoding};
-use header::{CowHeader, build_headers};
-pub use header::{Header, HeaderMap, parse_headers};
+pub use header::{CowHeader, Header, HeaderMap, parse_header, parse_headers};
+use header::build_headers;
 
-use mailparse::{
-    DispositionType, MailParseError, ParsedContentDisposition, ParsedContentType, ParsedMail, body::Body,
-    parse_content_disposition, parse_content_type,
-};
+/// Re-exported from [`mailparse`], which parses the MIME structure for this crate: these types
+/// appear in this crate's public API, so depending on `mailparse` separately is neither necessary
+/// nor advisable — the version re-exported here is the one these signatures refer to.
+pub use mailparse::{DispositionType, MailParseError, ParsedContentDisposition, ParsedContentType};
+use mailparse::{ParsedMail, body::Body, parse_content_disposition, parse_content_type};
+
+/// Re-exported from [`mediatype`]. [`MediaType`] is the content type accepted by
+/// [`CowMail::set_content`] and [`CowMail::set_content_raw`], and [`names`] / [`values`] hold the
+/// typed constants to build one with, so depending on `mediatype` separately is neither necessary
+/// nor advisable.
 pub use mediatype::{MediaType, names, values};
 use mediatype::{MediaTypeBuf, Name, ReadParams, WriteParams, names::*, values::UTF_8};
-use rand::{distr::Alphanumeric, rng, RngExt};
+use rand::{RngExt, distr::Alphanumeric, rng};
 use std::borrow::Cow;
 use std::ops::Deref;
 
+/// Everything that can go wrong while parsing or modifying a message.
 #[derive(Debug)]
 pub enum CowMailError {
-    Generic(String),
+    /// mailparse failed to parse the message. Carries its error unchanged.
     MailParseError(MailParseError),
+    /// A part declares a `multipart/*` content type without a `boundary` parameter.
+    ///
+    /// Only reachable from [`parse_mail`], and only for a part mailparse did split into subparts —
+    /// which it cannot do without a boundary. In other words: a broken invariant of the bridge to
+    /// mailparse, not malformed input.
+    MissingBoundary,
+    /// A header line mailparse scanned does not point into the part it was scanned from.
+    ///
+    /// Header positions are recovered by comparing pointers (see the crate's `offset_in`), which
+    /// relies on every key and value being an exact subslice of its part. A mailparse that stops
+    /// doing that surfaces here instead of as a wrong index.
+    HeaderNotASubslice,
+    /// A subpart mailparse split out does not point into its parent's bytes.
+    ///
+    /// The same invariant as [`HeaderNotASubslice`](Self::HeaderNotASubslice), one level up: part
+    /// positions are recovered from `ParsedMail::raw_bytes` being an exact subslice of its
+    /// parent's.
+    SubpartNotASubslice,
+    /// The `Content-Type` header a modification needs is absent.
+    ///
+    /// Returned by [`CowMail::set_boundary`], which has no header to put the parameter on.
     MissingContentTypeHeader,
 }
 
-impl std::error::Error for CowMailError {}
+impl std::error::Error for CowMailError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MailParseError(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
 impl std::fmt::Display for CowMailError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Generic(error) => write!(f, "{}", error),
             Self::MailParseError(error) => write!(f, "{}", error),
-            Self::MissingContentTypeHeader => write!(f, "missing ContentType header"),
+            Self::MissingBoundary => write!(f, "multipart without a boundary parameter"),
+            Self::HeaderNotASubslice => write!(f, "header is not a slice of its part"),
+            Self::SubpartNotASubslice => write!(f, "subpart is not a slice of its parent"),
+            Self::MissingContentTypeHeader => write!(f, "missing Content-Type header"),
         }
     }
 }
@@ -731,6 +774,14 @@ impl<'a> CowMailReader<'a> {
     }
 }
 
+impl std::fmt::Debug for CowMailReader<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CowMailReader")
+            .field("current", &self.current)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a, H: Header<'a>> From<&'a CowMail<'a, H>> for CowMailReader<'a> {
     fn from(msg: &'a CowMail<'a, H>) -> Self {
         CowMailReader {
@@ -849,11 +900,10 @@ fn build_mail<'a, H: Header<'a> + 'a>(
         .ctype
         .params
         .get("boundary")
-        .ok_or_else(|| CowMailError::Generic("multipart without a boundary parameter".to_string()))?;
+        .ok_or(CowMailError::MissingBoundary)?;
 
     let offset_of = |part: &ParsedMail<'a>| {
-        offset_in(raw_data, part.raw_bytes)
-            .ok_or_else(|| CowMailError::Generic("subpart is not a slice of its parent".to_string()))
+        offset_in(raw_data, part.raw_bytes).ok_or(CowMailError::SubpartNotASubslice)
     };
 
     // The preamble ends where the delimiter line before the first part begins.

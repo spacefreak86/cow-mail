@@ -1,4 +1,9 @@
 //! Body transfer-encoding.
+//!
+//! [`encode`] takes the content of a part and returns the encoded bytes together with the
+//! [`ContentTransferEncoding`] to declare for them. It picks the most compact of `7bit`,
+//! `quoted-printable` and `base64`, so a plain ASCII body stays readable in the serialized message
+//! while binary content ends up base64-encoded.
 
 use std::fmt::{self, Display};
 use std::mem;

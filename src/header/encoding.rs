@@ -1,3 +1,5 @@
+//! RFC 2047 encoding and folding of header values.
+
 use std::fmt::Write;
 use email_encoding::headers::writer::EmailWriter;
 

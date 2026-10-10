@@ -1,3 +1,5 @@
+//! The [`HeaderMap`] collection trait and header-block parsing.
+
 use mailparse::MailHeader;
 
 use super::{Header, build_header};
