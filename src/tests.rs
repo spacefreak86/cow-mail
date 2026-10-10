@@ -1,4 +1,5 @@
 //use std::io::{Read, Write};
+use crate::header::encode_header_value;
 use crate::{BodyType, CowHeader, CowMail, Header, HeaderMap, Mail, mime};
 
 fn serialize<'a>(mail: &'a CowMail<'a, CowHeader<'a>>) -> Vec<u8> {
@@ -1214,4 +1215,12 @@ fn test_make_mixed_is_case_insensitive() {
     mail.make_mixed(None);
     assert_eq!(mail.subparts.len(), 1);
     assert_eq!(String::from_utf8_lossy(&serialize(&mail)), raw);
+}
+
+// Was a doc test on `encode_header_value` before it became crate-private.
+// A word of allowed bytes is written as it stands; the rest is RFC 2047-encoded.
+#[test]
+fn test_encode_header_value() {
+    assert_eq!(encode_header_value("Subject", "a test"), "a test");
+    assert_eq!(encode_header_value("Subject", "Grüße"), "=?utf-8?b?R3LDvMOfZQ==?=");
 }

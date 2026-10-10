@@ -238,7 +238,7 @@ impl ContentType {
     ///
     /// `text/plain` normally, but `message/rfc822` for a part of a `multipart/digest`, per RFC
     /// 2046 section 5.1.5. Pass whether the part sits in such a digest.
-    pub fn default_conditional(in_multipart_digest: bool) -> Self {
+    pub(crate) fn default_conditional(in_multipart_digest: bool) -> Self {
         match in_multipart_digest {
             true => mime::MESSAGE_RFC822,
             false => mime::TEXT_PLAIN,
@@ -508,8 +508,8 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
 
     /// The content type to assume when the part has no `Content-Type` header.
     ///
-    /// Normally `text/plain; charset=us-ascii`, but `message/rfc822` inside a `multipart/digest`.
-    /// See [`ContentType::default_conditional`].
+    /// Normally `text/plain; charset=us-ascii`, but `message/rfc822` inside a `multipart/digest`,
+    /// per RFC 2046 section 5.1.5.
     fn default_ctype(&self) -> ContentType;
 
     /// The body exactly as it sits in the message, still transfer-encoded.
@@ -808,7 +808,7 @@ pub struct CowMail<'a, H: Header<'a>> {
     /// The content type to assume while this part has no `Content-Type` header.
     ///
     /// Set while parsing, since only then is it known whether the part sits in a
-    /// `multipart/digest`. See [`ContentType::default_conditional`].
+    /// `multipart/digest` — which makes it `message/rfc822` rather than `text/plain`.
     pub default_ctype: ContentType,
 }
 

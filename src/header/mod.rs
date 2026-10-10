@@ -11,7 +11,7 @@
 mod encoding;
 mod headers;
 
-pub use encoding::encode_header_value;
+pub(crate) use encoding::encode_header_value;
 pub(crate) use headers::build_headers;
 pub use headers::{HeaderMap, parse_headers};
 
@@ -53,8 +53,8 @@ use crate::{CowMailError, offset_in, parse_error};
 pub trait Header<'a>: Clone + Display {
     /// A new header from a key and a value.
     ///
-    /// The value is RFC 2047-encoded and folded as needed — see [`encode_header_value`] — so pass
-    /// it as the text it should decode to, not pre-encoded.
+    /// The value is RFC 2047-encoded and folded as needed, so pass it as the text it should decode
+    /// to, not pre-encoded.
     ///
     /// # Panics
     ///
@@ -211,8 +211,8 @@ pub trait Header<'a>: Clone + Display {
 }
 
 struct RFC2045HeaderValue<T> {
-    pub value: T,
-    pub params: BTreeMap<T, T>,
+    value: T,
+    params: BTreeMap<T, T>,
 }
 
 impl<T: ToString> Display for RFC2045HeaderValue<T> {

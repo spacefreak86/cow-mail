@@ -38,18 +38,8 @@ fn encode(encode_buf: &mut String, writer: &mut EmailWriter) {
 /// `key` itself is not part of the result: only its length matters, for the length of the first
 /// line.
 ///
-/// # Examples
-///
-/// ```
-/// use cow_mail::header::encode_header_value;
-///
-/// // Plain text is left alone.
-/// assert_eq!(encode_header_value("Subject", "a test"), "a test");
-///
-/// // Only the words that need it are encoded.
-/// assert_eq!(encode_header_value("Subject", "Grüße"), "=?utf-8?b?R3LDvMOfZQ==?=");
-/// ```
-pub fn encode_header_value(key: &str, value: &str) -> String {
+/// Pinned by `test_encode_header_value` in `src/tests.rs`.
+pub(crate) fn encode_header_value(key: &str, value: &str) -> String {
     let mut encoded_value = String::new();
     let line_len = key.len() + ": ".len();
     let mut writer = EmailWriter::new(&mut encoded_value, line_len, 0, false);
