@@ -432,6 +432,37 @@ enum BodyCheckStatus {
 /// for anything the provided methods do not cover. The consequence is that nothing derived from the
 /// headers can be cached, since there is no way to notice a change — see [`Mail::content_type`].
 ///
+/// # Serializing the original
+///
+/// The three `*_orig` fields are set while parsing and never written to again, so the message as it
+/// arrived can be serialized at any point, however much has been modified in the meantime — no copy
+/// has to be kept on the side:
+///
+/// - [`bytes_orig`](Self::bytes_orig) is the whole part, subparts included. Writing it out
+///   reproduces the original part exactly; on the top-level `CowMail` that is the original message.
+/// - [`header_bytes_orig`](Self::header_bytes_orig) is the original header block, blank line
+///   included, and [`body_bytes_orig`](Self::body_bytes_orig) the original body — for a container,
+///   its preamble. Together they are the part without its terminating newline, which is useful for
+///   writing out one half of it, or for comparing one half against the current state.
+///
+/// All three are empty for a part that was built rather than parsed.
+///
+/// ```
+/// use email_message::{CowMail, HeaderMap, Mail};
+///
+/// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
+/// let mut mail = CowMail::try_from(&raw[..]).unwrap();
+///
+/// mail.replace_all_headers("Subject", "Changed");
+/// mail.set_text_body("changed").unwrap();
+/// assert_ne!(mail.serialize().concat(), raw.to_vec());
+///
+/// // The message as it arrived is still right there.
+/// assert_eq!(mail.bytes_orig, raw);
+/// assert_eq!(mail.header_bytes_orig, b"Subject: Hi\r\n\r\n");
+/// assert_eq!(mail.body_bytes_orig, b"body");
+/// ```
+///
 /// # Examples
 ///
 /// ```
@@ -452,14 +483,19 @@ enum BodyCheckStatus {
 /// ```
 #[derive(Debug, Clone)]
 pub struct CowMail<'a, H: Header<'a>> {
-    /// The part exactly as it was parsed, headers and body, never modified.
+    /// The part exactly as it was parsed — headers, body and subparts — never modified.
+    ///
+    /// Writing this out reproduces the part as it arrived, whatever has been changed since, so the
+    /// original message stays available for as long as the `CowMail` does. See
+    /// [*Serializing the original*](#serializing-the-original).
     ///
     /// Empty for a part that was built rather than parsed.
     pub bytes_orig: &'a [u8],
     /// The header block as it was parsed, up to and including the blank line that ends it.
     ///
-    /// Kept after [`headers`](Self::headers) has been modified, and used to recover the line ending
-    /// to write the header/body separator with when the part has no headers left.
+    /// Never modified, so the original headers can be written out on their own at any time — see
+    /// [*Serializing the original*](#serializing-the-original). Also used internally to recover the
+    /// line ending for the header/body separator when the part has no headers left.
     pub header_bytes_orig: &'a [u8],
     /// The headers of this part, in the order they appear in the message.
     ///
@@ -471,10 +507,11 @@ pub struct CowMail<'a, H: Header<'a>> {
     /// For a multipart container this is the preamble before the first delimiter line, not the
     /// subparts.
     pub body_bytes: Cow<'a, [u8]>,
-    /// The body as it was parsed.
+    /// The body as it was parsed — the preamble only, for a multipart container.
     ///
     /// Unlike [`body_bytes`](Self::body_bytes) this stays put when the body is replaced, so the
-    /// original and the current body can be compared. Not used by this crate itself.
+    /// original body can be written out or compared against the current one at any time. See
+    /// [*Serializing the original*](#serializing-the-original).
     pub body_bytes_orig: &'a [u8],
     /// The parts of a multipart message, each one a `CowMail` of its own.
     ///

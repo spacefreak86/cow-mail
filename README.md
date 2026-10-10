@@ -60,9 +60,11 @@ assert!(mail.is_multipart());
 - **`CowMail`** is the message, and every part of a multipart message is a `CowMail` as well. Its
   fields are public: `headers`, `body_bytes` and `subparts` are meant to be edited directly when the
   provided methods do not fit.
-- The `*_orig` fields (`bytes_orig`, `header_bytes_orig`, `body_bytes_orig`) keep the originally
-  parsed slices even after `body_bytes` has become owned, so the original and the modified message
-  can be compared.
+- The `*_orig` fields (`bytes_orig`, `header_bytes_orig`, `body_bytes_orig`) are set while parsing
+  and never written to again, so the message **as it arrived** can be serialized or compared against
+  at any point, however much has been modified in the meantime — no copy has to be kept on the side.
+  `bytes_orig` is the whole part, subparts included; the other two are the original header block and
+  body on their own.
 - **`HeaderMap`** finds, iterates and edits headers by key; keys match case-insensitively and an
   `index` argument counts occurrences of that key, not positions in the list. It is implemented for
   `CowMail` and for `Vec<H>`.
