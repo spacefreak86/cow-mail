@@ -74,8 +74,8 @@
             CowMail::try_from(concat!("Content-Type: text/plain\n", "\n", "This is a test message").as_bytes())
                 .unwrap();
         let ctype = mail.content_type();
-        assert_eq!(ctype.mimetype, "text/plain");
-        assert_eq!(ctype.charset, "us-ascii");
+        assert_eq!(ctype.mimetype(), "text/plain");
+        assert_eq!(ctype.charset(), "us-ascii");
         assert!(!mail.is_multipart());
         assert_eq!(mail.get_content().unwrap(), "This is a test message");
 
@@ -84,15 +84,15 @@
         assert_eq!(mail.get_content().unwrap(), "");
         mail.set_content("This is a new test message ❤\n".to_string(), None);
         let ctype = mail.content_type();
-        assert_eq!(ctype.mimetype, "text/plain");
-        assert_eq!(ctype.charset, "UTF-8");
+        assert_eq!(ctype.mimetype(), "text/plain");
+        assert_eq!(ctype.charset(), "UTF-8");
 
         mail.clear_content();
         assert_eq!(mail.get_content().unwrap(), "");
         mail.set_content("This is a new test message\n".to_string(), None);
         let ctype = mail.content_type();
-        assert_eq!(ctype.mimetype, "text/plain");
-        assert_eq!(ctype.charset, "us-ascii");
+        assert_eq!(ctype.mimetype(), "text/plain");
+        assert_eq!(ctype.charset(), "us-ascii");
 
         mail.add_header("From", "\"John Doe\" <john.doe@example.com>");
 
@@ -106,8 +106,8 @@
         let alt_boundary = mail.get_boundary().unwrap();
 
         let ctype = mail.content_type();
-        assert_eq!(ctype.mimetype, "multipart/alternative");
-        assert_eq!(ctype.params.get("boundary").unwrap(), &alt_boundary);
+        assert_eq!(ctype.mimetype(), "multipart/alternative");
+        assert_eq!(ctype.get_param("boundary").unwrap(), alt_boundary);
         assert_eq!(
             mail.find_header("Content-Type").unwrap().get_value(),
             format!("multipart/alternative; boundary=\"{}\"", alt_boundary)
@@ -187,10 +187,10 @@
 
         mail.set_html_body("<p>HTML</p>").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype(), "text/html");
         assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "Plain text");
         assert_eq!(mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(), "<p>HTML</p>");
     }
@@ -205,10 +205,10 @@
 
         mail.set_text_body("Plain text").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype(), "text/html");
         assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "Plain text");
         assert_eq!(mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(), "<p>HTML</p>");
     }
@@ -219,15 +219,15 @@
         let mut mail = CowMail::<CowHeader>::new();
 
         mail.set_text_body("Plain text").unwrap();
-        assert_eq!(mail.content_type().mimetype, "text/plain");
+        assert_eq!(mail.content_type().mimetype(), "text/plain");
         assert!(!mail.is_multipart());
 
         mail.set_html_body("<p>HTML</p>").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype(), "text/html");
     }
 
     // Test: empty + set_html + set_text -> alternative[plain, html]
@@ -236,15 +236,15 @@
         let mut mail = CowMail::<CowHeader>::new();
 
         mail.set_html_body("<p>HTML</p>").unwrap();
-        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
         assert!(mail.is_multipart());
 
         mail.set_text_body("Plain text").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype(), "text/html");
     }
 
     // Test: mixed[attachment] + set_text -> mixed[plain, attachment]
@@ -266,14 +266,14 @@
         )
         .unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.content_type().mimetype(), "multipart/mixed");
         assert_eq!(mail.subparts.len(), 1);
 
         mail.set_text_body("Plain text").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.content_type().mimetype(), "multipart/mixed");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "text/plain");
         assert!(mail.subparts[1].is_attachment());
     }
 
@@ -298,12 +298,12 @@
         mail.set_text_body("Plain text").unwrap();
         mail.set_html_body("<p>HTML</p>").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.content_type().mimetype(), "multipart/mixed");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts[0].subparts.len(), 2);
-        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype(), "text/html");
         assert!(mail.subparts[1].is_attachment());
     }
 
@@ -332,12 +332,12 @@
         assert_eq!(mail.subparts.len(), 2);
         mail.set_html_body("<p>HTML</p>").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.content_type().mimetype(), "multipart/mixed");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts[0].subparts.len(), 2);
-        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype(), "text/html");
         assert!(mail.subparts[1].is_attachment());
     }
 
@@ -363,13 +363,13 @@
         )
         .unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/related");
+        assert_eq!(mail.content_type().mimetype(), "multipart/related");
         mail.set_text_body("Plain text").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[1].content_type().mimetype, "multipart/related");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype(), "multipart/related");
         assert_eq!(mail.subparts[1].subparts.len(), 2);
     }
 
@@ -419,10 +419,10 @@
         mail.set_html_body("<p>HTML</p>").unwrap();
 
         // the related container is wrapped in an alternative holding both bodies
-        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "multipart/related");
-        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "multipart/related");
+        assert_eq!(mail.subparts[1].content_type().mimetype(), "text/html");
         assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "Plain text\n");
         assert_eq!(mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(), "<p>HTML</p>");
     }
@@ -460,11 +460,11 @@
 
         mail.set_text_body("Plain text").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.content_type().mimetype(), "multipart/mixed");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "multipart/alternative");
-        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype, "multipart/related");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "multipart/alternative");
+        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype(), "multipart/related");
         assert!(mail.subparts[1].is_attachment());
     }
 
@@ -487,10 +487,10 @@
 
         mail.set_html_body("<p>HTML</p>").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype(), "text/html");
     }
 
     // Test: alternative[html] + set_text -> alternative[plain, html]
@@ -512,10 +512,10 @@
 
         mail.set_text_body("Plain text").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[1].content_type().mimetype(), "text/html");
     }
 
     // Test: update existing body in alternative[plain, html]
@@ -572,9 +572,9 @@
 
         mail.set_text_body("Plain text").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.content_type().mimetype(), "multipart/mixed");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "text/plain");
         assert_eq!(mail.subparts[0].get_content().unwrap(), "Plain text");
         assert!(mail.subparts[1].is_attachment());
         assert_eq!(mail.subparts[1].get_content().unwrap(), "binary data");
@@ -599,9 +599,9 @@
 
         mail.set_html_body("<p>HTML</p>").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.content_type().mimetype(), "multipart/mixed");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "text/html");
         assert!(mail.subparts[1].is_attachment());
     }
 
@@ -622,12 +622,12 @@
         mail.set_text_body("Plain text").unwrap();
         mail.set_html_body("<p>HTML</p>").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.content_type().mimetype(), "multipart/mixed");
         assert_eq!(mail.subparts.len(), 2);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "multipart/alternative");
         assert_eq!(mail.subparts[0].subparts.len(), 2);
-        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype, "text/plain");
-        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype, "text/html");
+        assert_eq!(mail.subparts[0].subparts[0].content_type().mimetype(), "text/plain");
+        assert_eq!(mail.subparts[0].subparts[1].content_type().mimetype(), "text/html");
         assert!(mail.subparts[1].is_attachment());
         assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "Plain text");
         assert_eq!(mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(), "<p>HTML</p>");
@@ -662,10 +662,10 @@
 
         mail.set_html_body("<p>HTML</p>").unwrap();
 
-        assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+        assert_eq!(mail.content_type().mimetype(), "multipart/mixed");
         assert_eq!(mail.subparts.len(), 3);
         assert!(mail.subparts[0].is_attachment());
-        assert_eq!(mail.subparts[1].content_type().mimetype, "multipart/alternative");
+        assert_eq!(mail.subparts[1].content_type().mimetype(), "multipart/alternative");
         assert!(mail.subparts[2].is_attachment());
     }
 
@@ -754,7 +754,7 @@
         let mail = CowMail::try_from(raw.as_bytes()).unwrap();
 
         assert_eq!(mail.subparts.len(), 1);
-        assert_eq!(mail.subparts[0].content_type().mimetype, "message/rfc822");
+        assert_eq!(mail.subparts[0].content_type().mimetype(), "message/rfc822");
     }
 
     // Test: a nested multipart with a preamble and an epilogue round-trips

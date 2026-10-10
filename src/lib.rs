@@ -17,8 +17,10 @@ use header::build_headers;
 /// Re-exported from [`mailparse`], which parses the MIME structure for this crate: these types
 /// appear in this crate's public API, so depending on `mailparse` separately is neither necessary
 /// nor advisable — the version re-exported here is the one these signatures refer to.
-pub use mailparse::{DispositionType, ParsedContentDisposition, ParsedContentType};
-use mailparse::{ParsedMail, body::Body, parse_content_disposition, parse_content_type};
+pub use mailparse::{DispositionType, ParsedContentDisposition};
+use mailparse::{
+    ParsedContentType, ParsedMail, body::Body, parse_content_disposition, parse_content_type,
+};
 
 /// Re-exported from [`mediatype`]. [`MediaType`] is the content type accepted by
 /// [`CowMail::set_content`] and [`CowMail::set_content_raw`], and [`names`] / [`values`] hold the
@@ -28,7 +30,7 @@ pub use mediatype::{MediaType, names, values};
 use mediatype::{MediaTypeBuf, Name, ReadParams, WriteParams, names::*, values::UTF_8};
 use rand::{RngExt, distr::Alphanumeric, rng};
 use std::borrow::Cow;
-use std::ops::Deref;
+use std::fmt::Display;
 
 /// A failure reported by the parser the crate uses internally.
 ///
@@ -162,64 +164,246 @@ pub enum MessageType {
     MultiPart(String),
 }
 
-/// A parsed `Content-Type` header: the mimetype, the charset and the parameters.
+/// A `Content-Type`: the mimetype plus its parameters.
 ///
-/// A thin wrapper around [`ParsedContentType`] that it [`Deref`]s to, so `mimetype`, `charset` and
-/// `params` are reachable directly. It exists to add [`Clone`] and a default that knows about
-/// `multipart/digest` (see [`default_conditional`](Self::default_conditional)).
+/// The type both sides of the crate speak: [`Mail::content_type`] hands one back for a part, and
+/// [`CowMail::set_content`] takes one for the part it writes. [`Display`](std::fmt::Display)
+/// renders it as it belongs in the header, which is how it ends up serialized.
 ///
-/// Built from a header value with `ContentType::from("text/plain; charset=utf-8")`, or obtained
-/// from a part with [`Mail::content_type`]. Note that the latter re-parses the header on every
-/// call, so hold on to the result rather than asking repeatedly.
-#[derive(Debug, Default)]
+/// Build one with [`new`](Self::new), take a ready-made one from [`mime`], or parse a header value
+/// with [`parse`](Self::parse) (also `ContentType::from("text/plain; charset=utf-8")`). Note that
+/// [`Mail::content_type`] re-parses the header on every call, so hold on to the result rather than
+/// asking repeatedly.
+///
+/// The `charset` is a parameter like any other — read it with [`charset`](Self::charset), which
+/// falls back to `us-ascii` as RFC 2045 section 5.2 prescribes.
+///
+/// # Examples
+///
+/// ```
+/// use cow_mail::ContentType;
+///
+/// let ctype = ContentType::parse("Text/HTML; Charset=\"utf-8\"");
+/// assert_eq!(ctype.mimetype(), "text/html");
+/// assert_eq!(ctype.subty(), "html");
+/// assert_eq!(ctype.charset(), "utf-8");
+///
+/// // A parameter is quoted only when it has to be.
+/// let built = ContentType::new("image", "png").with_param("name", "logo.png");
+/// assert_eq!(built.to_string(), "image/png; name=logo.png");
+/// let spaced = built.with_param("name", "my logo.png");
+/// assert_eq!(spaced.to_string(), "image/png; name=\"my logo.png\"");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentType {
-    ctype: ParsedContentType,
+    /// Always lowercase, so comparisons can be plain string comparisons.
+    mimetype: Cow<'static, str>,
+    /// Keys lowercase, values unquoted and unescaped. A `Vec` rather than a map, to keep the
+    /// parameters in the order they were added — that order is what gets serialized.
+    params: Vec<(Cow<'static, str>, Cow<'static, str>)>,
 }
 
 impl ContentType {
+    /// A content type from a `&'static str` that is already lowercase, in a `const` context.
+    ///
+    /// This is how the constants in [`mime`] are built. Nothing lowercases the string, so an
+    /// uppercase one would break the comparisons the rest of the crate does; use
+    /// [`new`](Self::new) or [`parse`](Self::parse) for anything that is not a literal.
+    pub const fn from_static(mimetype: &'static str) -> Self {
+        Self {
+            mimetype: Cow::Borrowed(mimetype),
+            params: Vec::new(),
+        }
+    }
+
+    /// A content type from a type and a subtype, e.g. `ContentType::new("image", "png")`.
+    ///
+    /// Both are lowercased. For a type that [`mime`] already has a constant for, use that instead.
+    pub fn new(ty: &str, subty: &str) -> Self {
+        Self {
+            mimetype: Cow::Owned(format!(
+                "{}/{}",
+                ty.to_ascii_lowercase(),
+                subty.to_ascii_lowercase()
+            )),
+            params: Vec::new(),
+        }
+    }
+
+    /// Parse a `Content-Type` header value.
+    ///
+    /// The mimetype and the parameter keys come back lowercased, parameter values unquoted. An
+    /// unparseable value yields the default, `text/plain`.
+    pub fn parse(value: &str) -> Self {
+        Self::from_parsed(parse_content_type(value))
+    }
+
     /// The content type to assume for a part that has no `Content-Type` header.
     ///
-    /// `text/plain; charset=us-ascii` normally, but `message/rfc822` for a part of a
-    /// `multipart/digest`, per RFC 2046 section 5.1.5. Pass whether the part sits in such a digest.
+    /// `text/plain` normally, but `message/rfc822` for a part of a `multipart/digest`, per RFC
+    /// 2046 section 5.1.5. Pass whether the part sits in such a digest.
     pub fn default_conditional(in_multipart_digest: bool) -> Self {
-        let mut ctype = ParsedContentType::default();
-        if in_multipart_digest {
-            ctype.mimetype = "message/rfc822".to_string();
+        match in_multipart_digest {
+            true => mime::MESSAGE_RFC822,
+            false => mime::TEXT_PLAIN,
         }
-        Self { ctype }
     }
-}
 
-impl Clone for ContentType {
-    fn clone(&self) -> Self {
+    /// The full mimetype, lowercase, e.g. `text/plain`.
+    pub fn mimetype(&self) -> &str {
+        &self.mimetype
+    }
+
+    /// The type half of the mimetype, e.g. `text` of `text/plain`.
+    pub fn ty(&self) -> &str {
+        match self.mimetype.split_once('/') {
+            Some((ty, _)) => ty,
+            None => &self.mimetype,
+        }
+    }
+
+    /// The subtype half of the mimetype, e.g. `plain` of `text/plain`.
+    ///
+    /// Empty for a mimetype without a `/`, which only a malformed header can produce.
+    pub fn subty(&self) -> &str {
+        match self.mimetype.split_once('/') {
+            Some((_, subty)) => subty,
+            None => "",
+        }
+    }
+
+    /// The `charset` parameter, or `us-ascii` when there is none (RFC 2045 section 5.2).
+    pub fn charset(&self) -> &str {
+        self.get_param("charset").unwrap_or("us-ascii")
+    }
+
+    /// The parameters, in the order they will be serialized in.
+    pub fn params(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.params.iter().map(|(k, v)| (k.as_ref(), v.as_ref()))
+    }
+
+    /// The parameter `key`, matched case-insensitively.
+    pub fn get_param(&self, key: &str) -> Option<&str> {
+        self.params
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_ref())
+    }
+
+    /// Set the parameter `key` to `value`, replacing it if it is already there.
+    ///
+    /// The key is lowercased; the value is kept as given and quoted on serialization if it needs
+    /// to be. A replaced parameter keeps its position.
+    pub fn set_param(&mut self, key: &str, value: impl Into<String>) {
+        let value = Cow::Owned(value.into());
+        match self.params.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(key)) {
+            Some(param) => param.1 = value,
+            None => self.params.push((Cow::Owned(key.to_ascii_lowercase()), value)),
+        }
+    }
+
+    /// [`set_param`](Self::set_param) as a builder step.
+    pub fn with_param(mut self, key: &str, value: impl Into<String>) -> Self {
+        self.set_param(key, value);
+        self
+    }
+
+    /// Build from what the parser produced.
+    ///
+    /// `charset` is dropped: the parser reports it both as a field and as a parameter, defaulting
+    /// the field to `us-ascii`, and keeping both would serialize it twice.
+    pub(crate) fn from_parsed(ctype: ParsedContentType) -> Self {
         Self {
-            ctype: ParsedContentType {
-                mimetype: self.ctype.mimetype.clone(),
-                charset: self.ctype.charset.clone(),
-                params: self.ctype.params.clone(),
-            },
+            mimetype: Cow::Owned(ctype.mimetype),
+            params: ctype
+                .params
+                .into_iter()
+                .map(|(k, v)| (Cow::Owned(k), Cow::Owned(v)))
+                .collect(),
+        }
+    }
+
+    /// Hand back to the parser, for the body decoding it does.
+    pub(crate) fn to_parsed(&self) -> ParsedContentType {
+        ParsedContentType {
+            mimetype: self.mimetype.to_string(),
+            charset: self.charset().to_string(),
+            params: self
+                .params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
         }
     }
 }
 
-impl Deref for ContentType {
-    type Target = ParsedContentType;
-
-    fn deref(&self) -> &Self::Target {
-        &self.ctype
+impl Default for ContentType {
+    fn default() -> Self {
+        mime::TEXT_PLAIN
     }
 }
 
-impl From<ParsedContentType> for ContentType {
-    fn from(ctype: ParsedContentType) -> Self {
-        Self { ctype }
+impl Display for ContentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.mimetype)?;
+        for (key, value) in &self.params {
+            match is_token(value) {
+                true => write!(f, "; {key}={value}")?,
+                false => {
+                    let escaped = value.replace('\\', r"\\").replace('"', "\\\"");
+                    write!(f, "; {key}=\"{escaped}\"")?
+                }
+            }
+        }
+        Ok(())
     }
 }
 
 impl From<&str> for ContentType {
     fn from(value: &str) -> Self {
-        parse_content_type(value).into()
+        Self::parse(value)
     }
+}
+
+/// Whether `value` is an RFC 2045 token, i.e. can go into a header unquoted.
+fn is_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b > 0x20 && b < 0x7f && !br#"()<>@,;:\"/[]?="#.contains(&b))
+}
+
+/// Ready-made [`ContentType`] constants for the types this crate itself deals in.
+///
+/// Anything else is a [`ContentType::new`] or a [`ContentType::parse`] away — this is not meant to
+/// grow into a mimetype registry.
+///
+/// # Examples
+///
+/// ```
+/// use cow_mail::mime;
+///
+/// assert_eq!(mime::TEXT_HTML.mimetype(), "text/html");
+/// assert_eq!(mime::MULTIPART_MIXED.subty(), "mixed");
+/// ```
+pub mod mime {
+    use super::ContentType;
+
+    /// `text/plain`, the default content type of a part without a `Content-Type` header.
+    pub const TEXT_PLAIN: ContentType = ContentType::from_static("text/plain");
+    /// `text/html`.
+    pub const TEXT_HTML: ContentType = ContentType::from_static("text/html");
+    /// `message/rfc822`, the default content type inside a `multipart/digest`.
+    pub const MESSAGE_RFC822: ContentType = ContentType::from_static("message/rfc822");
+    /// `multipart/mixed`, a part and its attachments.
+    pub const MULTIPART_MIXED: ContentType = ContentType::from_static("multipart/mixed");
+    /// `multipart/alternative`, the same content in two representations.
+    pub const MULTIPART_ALTERNATIVE: ContentType =
+        ContentType::from_static("multipart/alternative");
+    /// `multipart/related`, a part and the resources it refers to.
+    pub const MULTIPART_RELATED: ContentType = ContentType::from_static("multipart/related");
+    /// `multipart/digest`, a collection of messages.
+    pub const MULTIPART_DIGEST: ContentType = ContentType::from_static("multipart/digest");
 }
 
 /// The MIME view of a message or one of its parts, on top of its headers.
@@ -280,13 +464,13 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     /// [`SinglePart`](MessageType::SinglePart), as does an unparseable content type.
     fn message_type(&self) -> MessageType {
         let ctype = self.content_type();
-        match ctype.mimetype.parse::<MediaTypeBuf>() {
+        match ctype.mimetype().parse::<MediaTypeBuf>() {
             Ok(mtype) => {
                 let mut res = MessageType::SinglePart;
                 if mtype.ty() == MULTIPART
-                    && let Some(boundary) = ctype.params.get("boundary")
+                    && let Some(boundary) = ctype.get_param("boundary")
                 {
-                    res = MessageType::MultiPart(boundary.clone());
+                    res = MessageType::MultiPart(boundary.to_string());
                 }
                 res
             }
@@ -358,7 +542,7 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
         let transfer_encoding = self
             .find_value("Content-Transfer-Encoding")
             .map(|encoding| encoding.to_lowercase());
-        match Body::new(self.raw_body(), &ctype, &transfer_encoding) {
+        match Body::new(self.raw_body(), &ctype.to_parsed(), &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => {
                 Ok(body.get_decoded_as_string().map_err(parse_error)?)
             }
@@ -380,7 +564,7 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
         let transfer_encoding = self
             .find_value("Content-Transfer-Encoding")
             .map(|encoding| encoding.to_lowercase());
-        match Body::new(self.raw_body(), &ctype, &transfer_encoding) {
+        match Body::new(self.raw_body(), &ctype.to_parsed(), &transfer_encoding) {
             Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded().map_err(parse_error)?),
             Body::SevenBit(body) | Body::EightBit(body) => Ok(Vec::from(body.get_raw())),
             Body::Binary(body) => Ok(Vec::from(body.get_raw())),
@@ -415,13 +599,13 @@ impl PartInfo {
         self.media.subty()
     }
 
-    fn boundary(&self) -> Option<&String> {
-        self.ctype.params.get("boundary")
+    fn boundary(&self) -> Option<&str> {
+        self.ctype.get_param("boundary")
     }
 
     /// The `start` parameter of a multipart/related, naming its root part.
-    fn start(&self) -> Option<&String> {
-        self.ctype.params.get("start")
+    fn start(&self) -> Option<&str> {
+        self.ctype.get_param("start")
     }
 
     fn is_multipart(&self) -> bool {
@@ -608,7 +792,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     fn part_info(&self) -> PartInfo {
         let ctype = self.content_type();
         let media = ctype
-            .mimetype
+            .mimetype()
             .parse::<MediaTypeBuf>()
             .unwrap_or_else(|_| MediaTypeBuf::new(TEXT, PLAIN));
         PartInfo { ctype, media }
@@ -629,7 +813,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// let mut part = CowMail::default();
     /// part.set_content("<p>hi</p>", Some(MediaType::new(names::TEXT, names::HTML)));
     ///
-    /// assert_eq!(part.content_type().mimetype, "text/html");
+    /// assert_eq!(part.content_type().mimetype(), "text/html");
     /// assert_eq!(part.get_content().unwrap(), "<p>hi</p>");
     ///
     /// // Non-ASCII text gets a charset, and an encoding that survives transport.
@@ -677,7 +861,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     pub fn get_filename(&self) -> Option<String> {
         self.content_disposition()
             .and_then(|disp| disp.params.get("filename").cloned())
-            .or_else(|| self.content_type().params.get("name").cloned())
+            .or_else(|| self.content_type().get_param("name").map(str::to_string))
     }
 
     /// The `boundary` parameter of this part's `Content-Type` header, if it has one.
@@ -896,7 +1080,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// mail.make_alternative(Some("boundary".to_string()));
     ///
     /// // The content moved down one level; Subject stayed up top.
-    /// assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+    /// assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
     /// assert_eq!(mail.find_value("Subject").unwrap(), "Hi");
     /// assert_eq!(mail.subparts[0].get_content().unwrap(), "plain");
     ///
@@ -963,7 +1147,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// );
     /// mail.add_attachment(attachment);
     ///
-    /// assert_eq!(mail.content_type().mimetype, "multipart/mixed");
+    /// assert_eq!(mail.content_type().mimetype(), "multipart/mixed");
     /// let last = mail.subparts.last().unwrap();
     /// assert!(last.is_attachment());
     /// assert_eq!(last.find_value("Content-Transfer-Encoding").unwrap(), "base64");
@@ -1127,12 +1311,12 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// mail.add_header("Subject", "Hi");
     /// mail.set_body("plain", "<p>html</p>").unwrap();
     ///
-    /// assert_eq!(mail.content_type().mimetype, "multipart/alternative");
+    /// assert_eq!(mail.content_type().mimetype(), "multipart/alternative");
     /// assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "plain");
     /// assert_eq!(mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(), "<p>html</p>");
     ///
     /// // Plain comes first.
-    /// assert_eq!(mail.subparts[0].content_type().mimetype, "text/plain");
+    /// assert_eq!(mail.subparts[0].content_type().mimetype(), "text/plain");
     /// ```
     pub fn set_body<T: ToString>(&mut self, text: T, html: T) -> Result<(), CowMailError> {
         self.set_text_body(text)?;
