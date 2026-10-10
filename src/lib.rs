@@ -17,7 +17,7 @@ use header::build_headers;
 /// Re-exported from [`mailparse`], which parses the MIME structure for this crate: these types
 /// appear in this crate's public API, so depending on `mailparse` separately is neither necessary
 /// nor advisable — the version re-exported here is the one these signatures refer to.
-pub use mailparse::{DispositionType, MailParseError, ParsedContentDisposition, ParsedContentType};
+pub use mailparse::{DispositionType, ParsedContentDisposition, ParsedContentType};
 use mailparse::{ParsedMail, body::Body, parse_content_disposition, parse_content_type};
 
 /// Re-exported from [`mediatype`]. [`MediaType`] is the content type accepted by
@@ -30,27 +30,65 @@ use rand::{RngExt, distr::Alphanumeric, rng};
 use std::borrow::Cow;
 use std::ops::Deref;
 
+/// A failure reported by the parser the crate uses internally.
+///
+/// The concrete error type is deliberately not part of this crate's API, so that the parser
+/// can be changed or upgraded without breaking callers. [`Display`](std::fmt::Display) gives
+/// the message, and [`source`](std::error::Error::source) the underlying error, for anyone who
+/// wants to walk the chain down to e.g. the base64 decoder that rejected a body.
+pub struct ParseError {
+    source: Box<dyn std::error::Error + Send + Sync + 'static>,
+}
+
+impl std::fmt::Debug for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.source, f)
+    }
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.source, f)
+    }
+}
+
+impl std::error::Error for ParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.source)
+    }
+}
+
+/// Wrap the error of an internal dependency into [`CowMailError::Parse`].
+///
+/// Used instead of a `From` impl, which would name the foreign error type in this crate's
+/// public API — the whole point of hiding it.
+pub(crate) fn parse_error(error: impl std::error::Error + Send + Sync + 'static) -> CowMailError {
+    CowMailError::Parse(ParseError {
+        source: Box::new(error),
+    })
+}
+
 /// Everything that can go wrong while parsing or modifying a message.
 #[derive(Debug)]
 pub enum CowMailError {
-    /// mailparse failed to parse the message. Carries its error unchanged.
-    MailParseError(MailParseError),
+    /// The parser rejected the message. Carries its error, see [`ParseError`].
+    Parse(ParseError),
     /// A part declares a `multipart/*` content type without a `boundary` parameter.
     ///
-    /// Only reachable from [`parse_mail`], and only for a part mailparse did split into subparts —
-    /// which it cannot do without a boundary. In other words: a broken invariant of the bridge to
-    /// mailparse, not malformed input.
+    /// Only reachable from [`parse_mail`], and only for a part the parser did split into
+    /// subparts — which it cannot do without a boundary. In other words: a broken invariant of
+    /// the bridge to the parser, not malformed input.
     MissingBoundary,
-    /// A header line mailparse scanned does not point into the part it was scanned from.
+    /// A header line the parser scanned does not point into the part it was scanned from.
     ///
     /// Header positions are recovered by comparing pointers (see the crate's `offset_in`), which
-    /// relies on every key and value being an exact subslice of its part. A mailparse that stops
+    /// relies on every key and value being an exact subslice of its part. A parser that stops
     /// doing that surfaces here instead of as a wrong index.
     HeaderNotASubslice,
-    /// A subpart mailparse split out does not point into its parent's bytes.
+    /// A subpart the parser split out does not point into its parent's bytes.
     ///
     /// The same invariant as [`HeaderNotASubslice`](Self::HeaderNotASubslice), one level up: part
-    /// positions are recovered from `ParsedMail::raw_bytes` being an exact subslice of its
+    /// positions are recovered from each part's raw bytes being an exact subslice of its
     /// parent's.
     SubpartNotASubslice,
     /// The `Content-Type` header a modification needs is absent.
@@ -62,7 +100,7 @@ pub enum CowMailError {
 impl std::error::Error for CowMailError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::MailParseError(error) => Some(error),
+            Self::Parse(error) => Some(error),
             _ => None,
         }
     }
@@ -71,18 +109,12 @@ impl std::error::Error for CowMailError {
 impl std::fmt::Display for CowMailError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MailParseError(error) => write!(f, "{}", error),
+            Self::Parse(error) => write!(f, "{}", error),
             Self::MissingBoundary => write!(f, "multipart without a boundary parameter"),
             Self::HeaderNotASubslice => write!(f, "header is not a slice of its part"),
             Self::SubpartNotASubslice => write!(f, "subpart is not a slice of its parent"),
             Self::MissingContentTypeHeader => write!(f, "missing Content-Type header"),
         }
-    }
-}
-
-impl From<MailParseError> for CowMailError {
-    fn from(error: MailParseError) -> Self {
-        Self::MailParseError(error)
     }
 }
 
@@ -305,7 +337,7 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     ///
     /// # Errors
     ///
-    /// [`CowMailError::MailParseError`] if the body is not valid for the encoding it declares, or
+    /// [`CowMailError::Parse`] if the body is not valid for the encoding it declares, or
     /// cannot be decoded with the declared charset.
     ///
     /// # Examples
@@ -327,9 +359,11 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
             .find_value("Content-Transfer-Encoding")
             .map(|encoding| encoding.to_lowercase());
         match Body::new(self.raw_body(), &ctype, &transfer_encoding) {
-            Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded_as_string()?),
-            Body::SevenBit(body) | Body::EightBit(body) => Ok(body.get_as_string()?),
-            Body::Binary(body) => Ok(body.get_as_string()?),
+            Body::Base64(body) | Body::QuotedPrintable(body) => {
+                Ok(body.get_decoded_as_string().map_err(parse_error)?)
+            }
+            Body::SevenBit(body) | Body::EightBit(body) => Ok(body.get_as_string().map_err(parse_error)?),
+            Body::Binary(body) => Ok(body.get_as_string().map_err(parse_error)?),
         }
     }
 
@@ -340,14 +374,14 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     ///
     /// # Errors
     ///
-    /// [`CowMailError::MailParseError`] if the body is not valid for the encoding it declares.
+    /// [`CowMailError::Parse`] if the body is not valid for the encoding it declares.
     fn get_content_raw(&self) -> Result<Vec<u8>, CowMailError> {
         let ctype = self.content_type();
         let transfer_encoding = self
             .find_value("Content-Transfer-Encoding")
             .map(|encoding| encoding.to_lowercase());
         match Body::new(self.raw_body(), &ctype, &transfer_encoding) {
-            Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded()?),
+            Body::Base64(body) | Body::QuotedPrintable(body) => Ok(body.get_decoded().map_err(parse_error)?),
             Body::SevenBit(body) | Body::EightBit(body) => Ok(Vec::from(body.get_raw())),
             Body::Binary(body) => Ok(Vec::from(body.get_raw())),
         }
@@ -1337,7 +1371,7 @@ impl std::io::Read for CowMailReader<'_> {
 ///
 /// # Errors
 ///
-/// [`CowMailError::MailParseError`] when mailparse rejects the message; the other variants signal
+/// [`CowMailError::Parse`] when mailparse rejects the message; the other variants signal
 /// a broken invariant of the bridge to mailparse and should not occur.
 ///
 /// # Examples
@@ -1350,7 +1384,7 @@ impl std::io::Read for CowMailReader<'_> {
 /// assert_eq!(mail.find_value("Subject").unwrap(), "Hi");
 /// ```
 pub fn parse_mail<'a, H: Header<'a> + 'a>(raw_data: &'a [u8]) -> Result<CowMail<'a, H>, CowMailError> {
-    let parsed = mailparse::parse_mail(raw_data)?;
+    let parsed = mailparse::parse_mail(raw_data).map_err(parse_error)?;
     build_mail(raw_data, &parsed, false)
 }
 

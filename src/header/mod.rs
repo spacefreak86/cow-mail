@@ -22,7 +22,7 @@ use std::fmt::{self, Display};
 use charset::decode_latin1;
 use mailparse::{MailHeader, parse_content_type};
 
-use crate::{CowMailError, offset_in};
+use crate::{CowMailError, offset_in, parse_error};
 
 /// One header line, abstracted over how it is stored.
 ///
@@ -425,7 +425,7 @@ fn build_header<'a, H: Header<'a>>(
 ///
 /// # Errors
 ///
-/// [`CowMailError::MailParseError`] when [`mailparse::parse_header`] rejects the line.
+/// [`CowMailError::Parse`] when [`mailparse::parse_header`] rejects the line.
 ///
 /// # Examples
 ///
@@ -440,6 +440,6 @@ fn build_header<'a, H: Header<'a>>(
 /// assert_eq!(&raw[next..], b"To: nobody\r\n");
 /// ```
 pub fn parse_header<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(H, usize), CowMailError> {
-    let (parsed, _) = mailparse::parse_header(raw_data)?;
+    let (parsed, _) = mailparse::parse_header(raw_data).map_err(parse_error)?;
     build_header(raw_data, &parsed, None)
 }

@@ -3,7 +3,7 @@
 use mailparse::MailHeader;
 
 use super::{Header, build_header};
-use crate::{CowMailError, extend_over_newline};
+use crate::{CowMailError, extend_over_newline, parse_error};
 
 /// Find, iterate and edit a collection of headers by key.
 ///
@@ -310,7 +310,7 @@ pub(crate) fn build_headers<'a, H: Header<'a>>(
 ///
 /// # Errors
 ///
-/// [`CowMailError::MailParseError`] when [`mailparse::parse_headers`] rejects the block.
+/// [`CowMailError::Parse`] when [`mailparse::parse_headers`] rejects the block.
 ///
 /// # Examples
 ///
@@ -325,6 +325,6 @@ pub(crate) fn build_headers<'a, H: Header<'a>>(
 /// assert_eq!(&raw[body_idx..], b"body\r\n");
 /// ```
 pub fn parse_headers<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(Vec<H>, usize), CowMailError> {
-    let (parsed, _) = mailparse::parse_headers(raw_data)?;
+    let (parsed, _) = mailparse::parse_headers(raw_data).map_err(parse_error)?;
     build_headers(raw_data, &parsed)
 }
