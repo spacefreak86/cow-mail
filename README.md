@@ -41,7 +41,7 @@ assert!(out.starts_with(b"Subject: Hello"));
 Building a multipart message from scratch:
 
 ```rust
-use cow_mail::{CowMail, HeaderMap, Mail, MediaType, names};
+use cow_mail::{ContentType, CowMail, HeaderMap, Mail};
 
 let mut mail = CowMail::default();
 mail.add_header("Subject", "Report");
@@ -49,7 +49,7 @@ mail.set_body("plain text version", "<p>html version</p>").unwrap();
 
 let mut attachment = CowMail::new();
 attachment.add_header("Content-Disposition", "attachment; filename=\"report.csv\"");
-attachment.set_content("a,b\n1,2\n", Some(MediaType::new(names::TEXT, names::CSV)));
+attachment.set_content("a,b\n1,2\n", Some(ContentType::new("text", "csv")));
 mail.add_attachment(attachment);
 
 assert!(mail.is_multipart());

@@ -22,12 +22,7 @@ use mailparse::{
     ParsedContentType, ParsedMail, body::Body, parse_content_disposition, parse_content_type,
 };
 
-/// Re-exported from [`mediatype`]. [`MediaType`] is the content type accepted by
-/// [`CowMail::set_content`] and [`CowMail::set_content_raw`], and [`names`] / [`values`] hold the
-/// typed constants to build one with, so depending on `mediatype` separately is neither necessary
-/// nor advisable.
-pub use mediatype::{MediaType, names, values};
-use mediatype::{MediaTypeBuf, Name, ReadParams, WriteParams, names::*, values::UTF_8};
+use mediatype::{MediaTypeBuf, Name, names::*};
 use rand::{RngExt, distr::Alphanumeric, rng};
 use std::borrow::Cow;
 use std::fmt::Display;
@@ -35,7 +30,7 @@ use std::fmt::Display;
 /// A failure reported by the parser the crate uses internally.
 ///
 /// The concrete error type is deliberately not part of this crate's API, so that the parser
-/// can be changed or upgraded without breaking callers. [`Display`](std::fmt::Display) gives
+/// can be changed or upgraded without breaking callers. [`Display`] gives
 /// the message, and [`source`](std::error::Error::source) the underlying error, for anyone who
 /// wants to walk the chain down to e.g. the base64 decoder that rejected a body.
 pub struct ParseError {
@@ -140,13 +135,12 @@ impl BodyType {
             Self::HTML => Self::PLAIN,
         }
     }
-}
 
-impl From<BodyType> for Name<'_> {
-    fn from(btype: BodyType) -> Self {
-        match btype {
-            BodyType::PLAIN => PLAIN,
-            BodyType::HTML => HTML,
+    /// The subtype a part of this body type declares.
+    fn name(self) -> Name<'static> {
+        match self {
+            Self::PLAIN => PLAIN,
+            Self::HTML => HTML,
         }
     }
 }
@@ -167,7 +161,7 @@ pub enum MessageType {
 /// A `Content-Type`: the mimetype plus its parameters.
 ///
 /// The type both sides of the crate speak: [`Mail::content_type`] hands one back for a part, and
-/// [`CowMail::set_content`] takes one for the part it writes. [`Display`](std::fmt::Display)
+/// [`CowMail::set_content`] takes one for the part it writes. [`Display`]
 /// renders it as it belongs in the header, which is how it ends up serialized.
 ///
 /// Build one with [`new`](Self::new), take a ready-made one from [`mime`], or parse a header value
@@ -381,10 +375,11 @@ fn is_token(value: &str) -> bool {
 /// # Examples
 ///
 /// ```
-/// use cow_mail::mime;
+/// use cow_mail::{CowMail, Mail, mime};
 ///
-/// assert_eq!(mime::TEXT_HTML.mimetype(), "text/html");
-/// assert_eq!(mime::MULTIPART_MIXED.subty(), "mixed");
+/// let mut part = CowMail::default();
+/// part.set_content("<p>hi</p>", Some(mime::TEXT_HTML));
+/// assert_eq!(part.content_type().mimetype(), "text/html");
 /// ```
 pub mod mime {
     use super::ContentType;
@@ -808,10 +803,10 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// # Examples
     ///
     /// ```
-    /// use cow_mail::{CowMail, HeaderMap, Mail, MediaType, names};
+    /// use cow_mail::{CowMail, HeaderMap, Mail, mime};
     ///
     /// let mut part = CowMail::default();
-    /// part.set_content("<p>hi</p>", Some(MediaType::new(names::TEXT, names::HTML)));
+    /// part.set_content("<p>hi</p>", Some(mime::TEXT_HTML));
     ///
     /// assert_eq!(part.content_type().mimetype(), "text/html");
     /// assert_eq!(part.get_content().unwrap(), "<p>hi</p>");
@@ -821,12 +816,12 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// assert_eq!(part.find_value("Content-Type").unwrap(), "text/plain; charset=UTF-8");
     /// assert_eq!(part.get_content().unwrap(), "Grüße");
     /// ```
-    pub fn set_content<T: ToString>(&mut self, content: T, ctype: Option<MediaType>) {
+    pub fn set_content<T: ToString>(&mut self, content: T, ctype: Option<ContentType>) {
         let content = content.to_string();
 
-        let mut ctype = ctype.unwrap_or(MediaType::new(TEXT, PLAIN));
-        if !content.is_ascii() && ctype.get_param(CHARSET).is_none() {
-            ctype.set_param(CHARSET, UTF_8);
+        let mut ctype = ctype.unwrap_or_default();
+        if !content.is_ascii() && ctype.get_param("charset").is_none() {
+            ctype.set_param("charset", "UTF-8");
         }
 
         self.set_content_raw(content, Some(ctype));
@@ -838,7 +833,11 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// left off entirely when `None`. Binary content always ends up base64-encoded; pass a
     /// [`BodyContent::Text`] (or a `&str`/`String`, which convert into one) to allow the more
     /// compact encodings.
-    pub fn set_content_raw<B: Into<BodyContent>>(&mut self, content: B, ctype: Option<MediaType>) {
+    pub fn set_content_raw<B: Into<BodyContent>>(
+        &mut self,
+        content: B,
+        ctype: Option<ContentType>,
+    ) {
         self.clear_content();
 
         if let Some(ctype) = ctype {
@@ -904,7 +903,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
 
                 let subtype = info.subty();
                 let is_body = match bodytype {
-                    Some(bodytype) => subtype == Name::from(bodytype),
+                    Some(bodytype) => subtype == bodytype.name(),
                     None => subtype == PLAIN || subtype == HTML,
                 };
 
@@ -1135,7 +1134,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// # Examples
     ///
     /// ```
-    /// use cow_mail::{CowMail, HeaderMap, Mail, MediaType, names};
+    /// use cow_mail::{ContentType, CowMail, HeaderMap, Mail};
     ///
     /// let mut mail = CowMail::default();
     /// mail.set_text_body("see attached").unwrap();
@@ -1143,7 +1142,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// let mut attachment = CowMail::new();
     /// attachment.set_content_raw(
     ///     &b"\x89PNG\r\n\x1a\n"[..],
-    ///     Some(MediaType::new(names::IMAGE, names::PNG)),
+    ///     Some(ContentType::new("image", "png")),
     /// );
     /// mail.add_attachment(attachment);
     ///
@@ -1175,10 +1174,10 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
         current
     }
 
-    fn ctype_for_body(body_type: BodyType) -> Option<MediaType<'static>> {
+    fn ctype_for_body(body_type: BodyType) -> Option<ContentType> {
         match body_type {
             BodyType::PLAIN => None,
-            BodyType::HTML => Some(MediaType::new(TEXT, HTML)),
+            BodyType::HTML => Some(mime::TEXT_HTML),
         }
     }
 

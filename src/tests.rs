@@ -1,5 +1,5 @@
     //use std::io::{Read, Write};
-    use crate::{BodyType, CowHeader, CowMail, Header, HeaderMap, Mail, MediaType, names::HTML, names::TEXT};
+    use crate::{BodyType, CowHeader, CowMail, Header, HeaderMap, Mail, mime};
 
     fn serialize<'a>(mail: &'a CowMail<'a, CowHeader<'a>>) -> Vec<u8> {
         mail.serialize().iter().flat_map(|p| p.iter()).copied().collect()
@@ -99,7 +99,7 @@
         let mut html = CowMail::new();
         html.set_content(
             "<html><body>This is a new test message ☺</body></html>".to_string(),
-            Some(MediaType::new(TEXT, HTML)),
+            Some(mime::TEXT_HTML),
         );
 
         mail.add_alternative(html);
