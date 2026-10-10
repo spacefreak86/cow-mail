@@ -1,7 +1,7 @@
 //! RFC 2047 encoding and folding of header values.
 
-use std::fmt::Write;
 use email_encoding::headers::writer::EmailWriter;
+use std::fmt::Write;
 
 fn allowed_str(s: &str) -> bool {
     s.bytes().all(allowed_char)
@@ -59,7 +59,10 @@ pub fn encode_header_value(key: &str, value: &str) -> String {
             // This word only contains allowed characters
             // the next word is allowed, but we may have accumulated some words to encode
             encode(&mut encode_buf, &mut writer);
-            writer.folding().write_str(next_word).expect("String is always writable");
+            writer
+                .folding()
+                .write_str(next_word)
+                .expect("String is always writable");
         } else {
             // This word contains unallowed characters
             encode_buf.push_str(next_word);

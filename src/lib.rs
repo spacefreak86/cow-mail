@@ -11,15 +11,11 @@ pub mod header;
 mod tests;
 
 pub use body::{BodyContent, ContentTransferEncoding};
-pub use header::{CowHeader, Header, HeaderMap, parse_header, parse_headers};
 use header::build_headers;
+pub use header::{CowHeader, Header, HeaderMap, parse_header, parse_headers};
 
-/// Re-exported from [`mailparse`], which parses the MIME structure for this crate: these types
-/// appear in this crate's public API, so depending on `mailparse` separately is neither necessary
-/// nor advisable — the version re-exported here is the one these signatures refer to.
-pub use mailparse::{DispositionType, ParsedContentDisposition};
 use mailparse::{
-    ParsedContentType, ParsedMail, body::Body, parse_content_disposition, parse_content_type,
+    ParsedContentDisposition, ParsedContentType, ParsedMail, body::Body, parse_content_disposition, parse_content_type,
 };
 
 use mediatype::{MediaTypeBuf, Name, names::*};
@@ -215,11 +211,7 @@ impl ContentType {
     /// Both are lowercased. For a type that [`mime`] already has a constant for, use that instead.
     pub fn new(ty: &str, subty: &str) -> Self {
         Self {
-            mimetype: Cow::Owned(format!(
-                "{}/{}",
-                ty.to_ascii_lowercase(),
-                subty.to_ascii_lowercase()
-            )),
+            mimetype: Cow::Owned(format!("{}/{}", ty.to_ascii_lowercase(), subty.to_ascii_lowercase())),
             params: Vec::new(),
         }
     }
@@ -393,12 +385,96 @@ pub mod mime {
     /// `multipart/mixed`, a part and its attachments.
     pub const MULTIPART_MIXED: ContentType = ContentType::from_static("multipart/mixed");
     /// `multipart/alternative`, the same content in two representations.
-    pub const MULTIPART_ALTERNATIVE: ContentType =
-        ContentType::from_static("multipart/alternative");
+    pub const MULTIPART_ALTERNATIVE: ContentType = ContentType::from_static("multipart/alternative");
     /// `multipart/related`, a part and the resources it refers to.
     pub const MULTIPART_RELATED: ContentType = ContentType::from_static("multipart/related");
     /// `multipart/digest`, a collection of messages.
     pub const MULTIPART_DIGEST: ContentType = ContentType::from_static("multipart/digest");
+}
+
+/// What a part's `Content-Disposition` header says to do with it.
+///
+/// Read it off a part with [`ContentDisposition::disposition`], or ask
+/// [`Mail::is_attachment`] directly for the only distinction most callers care about.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum DispositionType {
+    /// `inline`: display the part as part of the message. The default, and what a
+    /// `Content-Disposition` with no recognizable disposition means.
+    #[default]
+    Inline,
+    /// `attachment`: a part that is not meant to be displayed inline.
+    Attachment,
+    /// `form-data`: a part of a submitted form, per RFC 7578.
+    FormData,
+    /// Any other disposition, lowercased.
+    Other(String),
+}
+
+/// A `Content-Disposition`: the disposition plus its parameters.
+///
+/// Obtained from a part with [`Mail::content_disposition`], which re-parses the header on every
+/// call. The parameter most worth asking for has its own accessor,
+/// [`filename`](Self::filename).
+///
+/// # Examples
+///
+/// ```
+/// use cow_mail::{CowMail, DispositionType, HeaderMap, Mail};
+///
+/// let mut part = CowMail::default();
+/// part.add_header("Content-Disposition", "attachment; filename=\"report.csv\"");
+///
+/// let disp = part.content_disposition().unwrap();
+/// assert_eq!(disp.disposition(), &DispositionType::Attachment);
+/// assert_eq!(disp.filename().unwrap(), "report.csv");
+/// assert!(part.is_attachment());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ContentDisposition {
+    disposition: DispositionType,
+    /// Keys lowercase, values unquoted.
+    params: Vec<(String, String)>,
+}
+
+impl ContentDisposition {
+    /// What to do with the part.
+    pub fn disposition(&self) -> &DispositionType {
+        &self.disposition
+    }
+
+    /// The parameters, in the order the header declared them.
+    pub fn params(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.params.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// The parameter `key`, matched case-insensitively.
+    pub fn get_param(&self, key: &str) -> Option<&str> {
+        self.params
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The `filename` parameter, if the header declares one.
+    ///
+    /// [`CowMail::get_filename`] is the fuller answer: it falls back to the deprecated `name`
+    /// parameter of `Content-Type`.
+    pub fn filename(&self) -> Option<&str> {
+        self.get_param("filename")
+    }
+
+    /// Build from what the parser produced.
+    pub(crate) fn from_parsed(disp: ParsedContentDisposition) -> Self {
+        Self {
+            disposition: match disp.disposition {
+                mailparse::DispositionType::Inline => DispositionType::Inline,
+                mailparse::DispositionType::Attachment => DispositionType::Attachment,
+                mailparse::DispositionType::FormData => DispositionType::FormData,
+                mailparse::DispositionType::Extension(other) => DispositionType::Other(other),
+            },
+            params: disp.params.into_iter().collect(),
+        }
+    }
 }
 
 /// The MIME view of a message or one of its parts, on top of its headers.
@@ -487,13 +563,13 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
 
     /// The parsed `Content-Disposition` header, or `None` when there is none.
     ///
-    /// Match [`ParsedContentDisposition::disposition`] against [`DispositionType`] for the
-    /// `inline` / `attachment` distinction, or read `params` for `filename` — see
+    /// Match [`ContentDisposition::disposition`] against [`DispositionType`] for the
+    /// `inline` / `attachment` distinction, or ask for the `filename` — see
     /// [`CowMail::get_filename`].
-    fn content_disposition(&self) -> Option<ParsedContentDisposition> {
+    fn content_disposition(&self) -> Option<ContentDisposition> {
         if let Some(header) = self.find_header("Content-Disposition") {
             let value = header.get_value();
-            return Some(parse_content_disposition(&value));
+            return Some(ContentDisposition::from_parsed(parse_content_disposition(&value)));
         }
         None
     }
@@ -503,7 +579,7 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     /// A part with no `Content-Disposition` header, or an `inline` one, is not an attachment.
     fn is_attachment(&self) -> bool {
         match self.content_disposition() {
-            Some(disp) => matches!(disp.disposition, DispositionType::Attachment),
+            Some(disp) => matches!(disp.disposition(), DispositionType::Attachment),
             None => false,
         }
     }
@@ -833,11 +909,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// left off entirely when `None`. Binary content always ends up base64-encoded; pass a
     /// [`BodyContent::Text`] (or a `&str`/`String`, which convert into one) to allow the more
     /// compact encodings.
-    pub fn set_content_raw<B: Into<BodyContent>>(
-        &mut self,
-        content: B,
-        ctype: Option<ContentType>,
-    ) {
+    pub fn set_content_raw<B: Into<BodyContent>>(&mut self, content: B, ctype: Option<ContentType>) {
         self.clear_content();
 
         if let Some(ctype) = ctype {
@@ -859,7 +931,7 @@ impl<'a, H: Header<'a> + 'a> CowMail<'a, H> {
     /// parameter of `Content-Type`.
     pub fn get_filename(&self) -> Option<String> {
         self.content_disposition()
-            .and_then(|disp| disp.params.get("filename").cloned())
+            .and_then(|disp| disp.filename().map(str::to_string))
             .or_else(|| self.content_type().get_param("name").map(str::to_string))
     }
 
@@ -1652,9 +1724,8 @@ fn build_mail<'a, H: Header<'a> + 'a>(
         .get("boundary")
         .ok_or(CowMailError::MissingBoundary)?;
 
-    let offset_of = |part: &ParsedMail<'a>| {
-        offset_in(raw_data, part.raw_bytes).ok_or(CowMailError::SubpartNotASubslice)
-    };
+    let offset_of =
+        |part: &ParsedMail<'a>| offset_in(raw_data, part.raw_bytes).ok_or(CowMailError::SubpartNotASubslice);
 
     // The preamble ends where the delimiter line before the first part begins.
     let first_part_idx = offset_of(first_part)?;

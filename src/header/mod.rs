@@ -12,8 +12,8 @@ mod encoding;
 mod headers;
 
 pub use encoding::encode_header_value;
-pub use headers::{HeaderMap, parse_headers};
 pub(crate) use headers::build_headers;
+pub use headers::{HeaderMap, parse_headers};
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -361,7 +361,6 @@ impl Display for CowHeader<'_> {
     }
 }
 
-
 /// End of the — possibly folded — header line whose value ends at `value_end`:
 /// past the first newline that is not followed by continuation whitespace. Only
 /// `\r`, `\n`, spaces and tabs can appear between the end of a value and the end
@@ -392,9 +391,7 @@ fn build_header<'a, H: Header<'a>>(
     parsed: &MailHeader<'a>,
     next: Option<&MailHeader<'a>>,
 ) -> Result<(H, usize), CowMailError> {
-    let offset_of = |bytes: &[u8]| {
-        offset_in(raw_data, bytes).ok_or(CowMailError::HeaderNotASubslice)
-    };
+    let offset_of = |bytes: &[u8]| offset_in(raw_data, bytes).ok_or(CowMailError::HeaderNotASubslice);
 
     let key = parsed.get_key_raw();
     let value = parsed.get_value_raw();
