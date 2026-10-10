@@ -1117,3 +1117,101 @@ fn test_roundtrip_header_colon_only() {
     assert_eq!(mail.headers[0].get_value_raw(), b"");
     assert_eq!(mail.headers[0].get_raw().as_ref(), b":\r\n");
 }
+
+// The crate matches mimetype halves as plain lowercase strings, with no
+// RFC 5322 name validation in between. A malformed mimetype is therefore taken
+// at face value instead of falling back to text/plain, so none of these parts
+// is a body.
+#[test]
+fn test_malformed_mimetype_is_not_a_body() {
+    for raw in [
+        "Content-Type: text/\r\n\r\nbody\r\n",
+        "Content-Type: foo bar/baz\r\n\r\nbody\r\n",
+        "Content-Type: text\r\n\r\nbody\r\n",
+    ] {
+        assert_roundtrip(raw);
+
+        let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+        assert!(mail.get_body_part(BodyType::PLAIN).is_none(), "{raw}");
+        assert!(mail.get_body_part(BodyType::HTML).is_none(), "{raw}");
+    }
+}
+
+// A structured-syntax suffix is part of the subtype, not stripped from it, so
+// text/html+foo is not the text/html body.
+#[test]
+fn test_mimetype_suffix_is_part_of_the_subtype() {
+    let raw = "Content-Type: text/html+foo\r\n\r\n<p>HTML</p>\r\n";
+    assert_roundtrip(raw);
+
+    let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+    assert_eq!(mail.content_type().subty(), "html+foo");
+    assert!(mail.get_body_part(BodyType::HTML).is_none());
+    assert!(mail.get_body_part(BodyType::PLAIN).is_none());
+}
+
+// `multipart` without a subtype still splits into subparts, so is_multipart()
+// has to agree with the parts that are actually there.
+#[test]
+fn test_multipart_without_subtype() {
+    let raw = concat!(
+        "Content-Type: multipart; boundary=b\r\n",
+        "\r\n",
+        "--b\r\n",
+        "Content-Type: text/plain\r\n",
+        "\r\n",
+        "plain\r\n",
+        "--b\r\n",
+        "Content-Type: text/html\r\n",
+        "\r\n",
+        "<p>HTML</p>\r\n",
+        "--b--\r\n",
+    );
+    assert_roundtrip(raw);
+
+    let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+    assert!(mail.is_multipart());
+    assert_eq!(mail.subparts.len(), 2);
+    assert_eq!(mail.get_body_part(BodyType::PLAIN).unwrap().get_content().unwrap(), "plain");
+    assert_eq!(
+        mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(),
+        "<p>HTML</p>"
+    );
+}
+
+// The mimetype is lowercased on the way in, which is what makes the plain
+// string comparisons case-insensitive.
+#[test]
+fn test_mimetype_matching_is_case_insensitive() {
+    let raw = "Content-Type: TEXT/HTML\r\n\r\n<p>HTML</p>\r\n";
+    assert_roundtrip(raw);
+
+    let mail = CowMail::try_from(raw.as_bytes()).unwrap();
+    assert_eq!(mail.content_type().mimetype(), "text/html");
+    assert_eq!(
+        mail.get_body_part(BodyType::HTML).unwrap().get_content().unwrap(),
+        "<p>HTML</p>"
+    );
+    assert!(mail.get_body_part(BodyType::PLAIN).is_none());
+}
+
+// MULTIPART/MIXED declares a container just as multipart/mixed does, and
+// make_mixed must see it as one rather than nesting another level.
+#[test]
+fn test_make_mixed_is_case_insensitive() {
+    let raw = concat!(
+        "Content-Type: MULTIPART/MIXED; boundary=b\r\n",
+        "\r\n",
+        "--b\r\n",
+        "Content-Type: text/plain\r\n",
+        "\r\n",
+        "plain\r\n",
+        "--b--\r\n",
+    );
+    let mut mail = CowMail::try_from(raw.as_bytes()).unwrap();
+    assert!(mail.is_multipart());
+
+    mail.make_mixed(None);
+    assert_eq!(mail.subparts.len(), 1);
+    assert_eq!(String::from_utf8_lossy(&serialize(&mail)), raw);
+}
