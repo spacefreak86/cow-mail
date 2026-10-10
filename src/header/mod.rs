@@ -24,12 +24,73 @@ use mailparse::{MailHeader, parse_content_type};
 
 use crate::{CowMailError, offset_in};
 
+/// One header line, abstracted over how it is stored.
+///
+/// A message is parsed into whatever type implements this, which is what makes
+/// [`CowMail`](crate::CowMail) generic over its headers. [`CowHeader`] is the implementation this
+/// crate provides and the one [`CowMail::try_from`](crate::CowMail::try_from) uses.
+///
+/// # Implementing
+///
+/// Six methods carry the storage: [`new`] and [`from`] construct, [`get_key_raw`] /
+/// [`get_value_raw`] / [`set_value_raw`] access, and [`serialize`] writes the line back out.
+/// Everything else — case-insensitive key comparison, RFC 2047 decoding, parameter handling — is
+/// provided on top of those.
+///
+/// [`from`] is handed the whole line plus the three offsets that cut it up, so an implementation
+/// can keep the line verbatim and borrow from it; one that stores key and value separately can
+/// slice them out and discard the rest, at the cost of no longer round-tripping the line exactly.
+/// An implementation that does keep the line should also override [`get_raw`], which otherwise
+/// rebuilds it.
+///
+/// [`new`]: Self::new
+/// [`from`]: Self::from
+/// [`get_key_raw`]: Self::get_key_raw
+/// [`get_value_raw`]: Self::get_value_raw
+/// [`set_value_raw`]: Self::set_value_raw
+/// [`serialize`]: Self::serialize
+/// [`get_raw`]: Self::get_raw
 pub trait Header<'a>: Clone + Display {
+    /// A new header from a key and a value.
+    ///
+    /// The value is RFC 2047-encoded and folded as needed — see [`encode_header_value`] — so pass
+    /// it as the text it should decode to, not pre-encoded.
+    ///
+    /// # Panics
+    ///
+    /// If `key` or `value` is empty.
     fn new<K: ToString, V: ToString>(key: K, value: V) -> Self;
+
+    /// A header from a line that was already parsed.
+    ///
+    /// `raw_bytes` is the whole line, trailing newline and any folded continuation lines included.
+    /// The offsets index into it: the key is `..key_end`, the value `value_start..value_end`. What
+    /// lies between them is the `:` and the whitespace after it, and what follows `value_end` is
+    /// the line ending.
     fn from(raw_bytes: &'a [u8], key_end: usize, value_start: usize, value_end: usize) -> Self;
+
+    /// The key as it appears in the message, undecoded.
     fn get_key_raw(&self) -> &[u8];
+
+    /// The value as it appears in the message: still RFC 2047-encoded, still folded.
+    ///
+    /// Use [`get_value`](Self::get_value) for the decoded, unfolded text.
     fn get_value_raw(&self) -> &[u8];
+
+    /// Replace the value with `value`, which is written out verbatim.
+    ///
+    /// No encoding or folding is applied — the caller is responsible for the result being a valid
+    /// header value. [`set_value`](Self::set_value) is the encoding one.
+    ///
+    /// # Panics
+    ///
+    /// If `value` is empty.
     fn set_value_raw(&mut self, value: Vec<u8>);
+
+    /// The header line as it should appear in the message, trailing newline included.
+    ///
+    /// A list of chunks, for the same reason as [`CowMail::serialize`](crate::CowMail::serialize):
+    /// an unmodified header stays borrowed from the message it was parsed from.
     fn serialize(&self) -> Vec<Cow<'_, [u8]>>;
 
     /// The raw header line, key included. Implementations holding the data
@@ -44,20 +105,31 @@ pub trait Header<'a>: Clone + Display {
         Cow::Owned(raw)
     }
 
+    /// The key as text, decoded as latin1 — which cannot fail, and header keys are ASCII anyway.
     fn get_key(&self) -> Cow<'_, str> {
         decode_latin1(self.get_key_raw())
     }
 
+    /// Whether this header's key is `key`, compared case-insensitively as RFC 5322 requires.
     fn key_eq(&self, key: &str) -> bool {
         self.get_key().eq_ignore_ascii_case(key)
     }
 
+    /// Whether this header's key starts with `prefix`, compared case-insensitively.
+    ///
+    /// Used to find the `Content-*` headers that [`Mail::clear_content`](crate::Mail::clear_content)
+    /// drops and [`CowMail::make_mixed`](crate::CowMail::make_mixed) moves into a subpart.
     fn key_starts_with(&self, prefix: &str) -> bool {
         let key = self.get_key_raw();
         let prefix = prefix.as_bytes();
         key.len() >= prefix.len() && key[..prefix.len()].eq_ignore_ascii_case(prefix)
     }
 
+    /// The raw value as text, borrowed when possible.
+    ///
+    /// RFC 6532 allows UTF-8 in header values, so that is tried first, with a latin1 fallback for
+    /// anything else. The value is *not* RFC 2047-decoded and *not* unfolded — this is the value as
+    /// written. Use [`get_value`](Self::get_value) for the decoded text.
     fn get_value_ref(&self) -> Cow<'_, str> {
         // RFC 6532 says that header values can be UTF-8. Let's try that first, and
         // fall back to latin1 if that fails
@@ -78,6 +150,14 @@ pub trait Header<'a>: Clone + Display {
         }
     }
 
+    /// Replace the value with `value`, RFC 2047-encoding and folding it as needed.
+    ///
+    /// Pass the text the value should decode to. The line is rewritten with CRLF, so a header
+    /// changed this way ends up with CRLF even in a message that otherwise uses bare LF.
+    ///
+    /// # Panics
+    ///
+    /// If `value` converts to an empty string.
     fn set_value<V: ToString>(&mut self, value: V) {
         let value = value.to_string();
         assert!(!value.is_empty());
@@ -85,6 +165,20 @@ pub trait Header<'a>: Clone + Display {
         self.set_value_raw(encoded_value.into_bytes());
     }
 
+    /// The value of the RFC 2045 parameter `key`, if this header has one.
+    ///
+    /// Only `Content-Type` and `Content-Disposition` are treated as carrying parameters; for any
+    /// other header this is always `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use email_message::{CowHeader, Header};
+    ///
+    /// let header = CowHeader::new("Content-Type", "text/plain; charset=utf-8");
+    /// assert_eq!(header.get_param("charset").unwrap(), "utf-8");
+    /// assert!(header.get_param("boundary").is_none());
+    /// ```
     fn get_param(&self, key: &str) -> Option<String>
     where
         Self: Sized,
@@ -93,6 +187,15 @@ pub trait Header<'a>: Clone + Display {
         header.params.get(key).cloned()
     }
 
+    /// Set the RFC 2045 parameter `key` to `value`, replacing it if it is already there.
+    ///
+    /// The whole value is rewritten, which has two visible consequences: the parameters come back
+    /// in alphabetical order, and the mimetype is lowercased — both because the value round-trips
+    /// through [`mailparse::parse_content_type`]. Parameter values are always quoted.
+    ///
+    /// # Panics
+    ///
+    /// If `key` or `value` converts to an empty string.
     fn set_param<K: ToString, V: ToString>(&mut self, key: K, value: V)
     where
         Self: Sized,
@@ -147,6 +250,28 @@ impl<'a, T: Header<'a>> From<&'_ T> for RFC2045HeaderValue<String> {
     }
 }
 
+/// A header line stored as it appears in the message.
+///
+/// The default [`Header`] implementation, and the one a message parsed with
+/// [`CowMail::try_from`](crate::CowMail::try_from) is built from. It keeps the whole line — key,
+/// separator, value, trailing newline, and any folded continuation lines — as a [`Cow`], plus the
+/// offsets of the key and the value within it. A parsed header borrows that line and serializes
+/// back to exactly the bytes it came from; changing the value clones it once and rewrites it with
+/// CRLF. [`is_owned`](Self::is_owned) tells the two apart.
+///
+/// # Examples
+///
+/// ```
+/// use email_message::{CowHeader, Header};
+///
+/// let header = CowHeader::new("Subject", "Grüße");
+///
+/// // Non-ASCII is RFC 2047-encoded on the way in, and decodes back out.
+/// assert_eq!(header.get_value_ref(), "=?utf-8?b?R3LDvMOfZQ==?=");
+/// assert_eq!(header.get_value(), "Grüße");
+/// assert_eq!(header.get_key(), "Subject");
+/// assert!(header.is_owned());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CowHeader<'a> {
     raw_bytes: Cow<'a, [u8]>,
@@ -156,6 +281,9 @@ pub struct CowHeader<'a> {
 }
 
 impl CowHeader<'_> {
+    /// Whether this header owns its line, i.e. it was built or modified rather than parsed.
+    ///
+    /// A parsed header that has not been touched borrows from the message and is not owned.
     pub fn is_owned(&self) -> bool {
         match self.raw_bytes {
             Cow::Owned(_) => true,
@@ -290,6 +418,27 @@ fn build_header<'a, H: Header<'a>>(
     Ok((header, line_end))
 }
 
+/// Parse the first header line of `raw_data`, borrowing from it.
+///
+/// Returns the header and the index just past its line, so the next one starts there. Folded
+/// continuation lines belong to the header and are included.
+///
+/// # Errors
+///
+/// [`CowMailError::MailParseError`] when [`mailparse::parse_header`] rejects the line.
+///
+/// # Examples
+///
+/// ```
+/// use email_message::{CowHeader, Header, parse_header};
+///
+/// let raw = b"Subject: Hi\r\nTo: nobody\r\n";
+/// let (header, next) = parse_header::<CowHeader>(&raw[..]).unwrap();
+///
+/// assert_eq!(header.get_key(), "Subject");
+/// assert_eq!(header.get_value(), "Hi");
+/// assert_eq!(&raw[next..], b"To: nobody\r\n");
+/// ```
 pub fn parse_header<'a, H: Header<'a>>(raw_data: &'a [u8]) -> Result<(H, usize), CowMailError> {
     let (parsed, _) = mailparse::parse_header(raw_data)?;
     build_header(raw_data, &parsed, None)

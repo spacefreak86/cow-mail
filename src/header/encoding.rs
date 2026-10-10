@@ -28,6 +28,27 @@ fn encode(encode_buf: &mut String, writer: &mut EmailWriter) {
     encode_buf.clear();
 }
 
+/// Encode `value` as the value of the header named `key`, ready to be written out.
+///
+/// Walks the value word by word. A word made entirely of allowed bytes is written as it is, with a
+/// line break and indentation inserted when the line would grow too long (RFC 5322 folding).
+/// Consecutive words containing anything else are collected and RFC 2047-encoded together, so a
+/// value mixing plain and non-ASCII text keeps its plain parts readable.
+///
+/// `key` itself is not part of the result: only its length matters, for the length of the first
+/// line.
+///
+/// # Examples
+///
+/// ```
+/// use email_message::header::encode_header_value;
+///
+/// // Plain text is left alone.
+/// assert_eq!(encode_header_value("Subject", "a test"), "a test");
+///
+/// // Only the words that need it are encoded.
+/// assert_eq!(encode_header_value("Subject", "Grüße"), "=?utf-8?b?R3LDvMOfZQ==?=");
+/// ```
 pub fn encode_header_value(key: &str, value: &str) -> String {
     let mut encoded_value = String::new();
     let line_len = key.len() + ": ".len();
