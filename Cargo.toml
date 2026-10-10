@@ -14,8 +14,8 @@ lto = true
 codegen-units = 1
 
 [dependencies]
-email-encoding = "*"
-quoted_printable = "*"
-charset = "*"
-mailparse = "*"
-rand = "*"
+email-encoding = "0.4.2"
+quoted_printable = "0.5.2"
+charset = "0.1.5"
+mailparse = "0.18.0"
+rand = "0.10.3"
