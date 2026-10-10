@@ -88,9 +88,15 @@ impl From<MailParseError> for CowMailError {
     }
 }
 
+/// Which of the two text bodies of a message is meant.
+///
+/// A message can carry a `text/plain` body, a `text/html` one, or both as the alternatives of a
+/// `multipart/alternative`. This selects one of them for [`CowMail::get_body_part`] and friends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyType {
+    /// The `text/html` body.
     HTML,
+    /// The `text/plain` body.
     PLAIN,
 }
 
@@ -113,18 +119,38 @@ impl From<BodyType> for Name<'_> {
     }
 }
 
+/// Whether a part carries a body of its own or a list of subparts.
+///
+/// Returned by [`Mail::message_type`]. A part counts as multipart only when its content type is
+/// `multipart/*` *and* it declares a `boundary` parameter, since without a boundary there is no way
+/// to tell its subparts apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageType {
+    /// The part holds a body of its own.
     SinglePart,
+    /// The part holds subparts, separated by the boundary carried here.
     MultiPart(String),
 }
 
+/// A parsed `Content-Type` header: the mimetype, the charset and the parameters.
+///
+/// A thin wrapper around [`ParsedContentType`] that it [`Deref`]s to, so `mimetype`, `charset` and
+/// `params` are reachable directly. It exists to add [`Clone`] and a default that knows about
+/// `multipart/digest` (see [`default_conditional`](Self::default_conditional)).
+///
+/// Built from a header value with `ContentType::from("text/plain; charset=utf-8")`, or obtained
+/// from a part with [`Mail::content_type`]. Note that the latter re-parses the header on every
+/// call, so hold on to the result rather than asking repeatedly.
 #[derive(Debug, Default)]
 pub struct ContentType {
     ctype: ParsedContentType,
 }
 
 impl ContentType {
+    /// The content type to assume for a part that has no `Content-Type` header.
+    ///
+    /// `text/plain; charset=us-ascii` normally, but `message/rfc822` for a part of a
+    /// `multipart/digest`, per RFC 2046 section 5.1.5. Pass whether the part sits in such a digest.
     pub fn default_conditional(in_multipart_digest: bool) -> Self {
         let mut ctype = ParsedContentType::default();
         if in_multipart_digest {
@@ -166,19 +192,62 @@ impl From<&str> for ContentType {
     }
 }
 
+/// The MIME view of a message or one of its parts, on top of its headers.
+///
+/// Implementors supply storage — the body bytes, the default content type, and the two ways of
+/// emptying a part — and get the MIME questions answered on top: content type and disposition,
+/// whether the part is a multipart container or an attachment, and the decoded body. Everything
+/// header-related comes from [`HeaderMap`], which this extends.
+///
+/// Implemented for [`CowMail`].
 pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
+    /// Empty the part completely: no headers, no body, no subparts.
     fn clear(&mut self);
+
+    /// Empty the content of the part, keeping everything else.
+    ///
+    /// Drops all `Content-*` headers, the body bytes and the subparts; other headers — `Subject`,
+    /// `From`, `MIME-Version` — stay. This is what [`CowMail::set_content`] and
+    /// [`CowMail::set_content_raw`] call before writing a new body.
     fn clear_content(&mut self);
+
+    /// The content type to assume when the part has no `Content-Type` header.
+    ///
+    /// Normally `text/plain; charset=us-ascii`, but `message/rfc822` inside a `multipart/digest`.
+    /// See [`ContentType::default_conditional`].
     fn default_ctype(&self) -> ContentType;
+
+    /// The body exactly as it sits in the message, still transfer-encoded.
+    ///
+    /// For a multipart container this is the preamble, not the subparts. Use [`get_content`] or
+    /// [`get_content_raw`] to decode a leaf part's body.
+    ///
+    /// [`get_content`]: Self::get_content
+    /// [`get_content_raw`]: Self::get_content_raw
     fn raw_body(&self) -> &[u8];
+
+    /// The body bytes, mutably, as a [`Cow`] so a modification can take ownership.
+    ///
+    /// Writing through this replaces the body verbatim: no encoding is applied and no
+    /// `Content-Transfer-Encoding` header is updated. Use [`CowMail::set_content`] unless that is
+    /// what you want.
     fn raw_body_mut(&mut self) -> &mut Cow<'a, [u8]>;
 
+    /// The parsed `Content-Type` of the part, or [`default_ctype`](Self::default_ctype) when the
+    /// header is absent.
+    ///
+    /// The header is re-parsed on every call, which allocates a map and a string per parameter, so
+    /// bind the result instead of calling this repeatedly.
     fn content_type(&self) -> ContentType {
         self.find_header("Content-Type")
             .map(|h| ContentType::from(h.get_value_ref().as_ref()))
             .unwrap_or_else(|| self.default_ctype())
     }
 
+    /// Whether the part carries subparts, and the boundary separating them.
+    ///
+    /// `multipart/*` without a `boundary` parameter counts as
+    /// [`SinglePart`](MessageType::SinglePart), as does an unparseable content type.
     fn message_type(&self) -> MessageType {
         let ctype = self.content_type();
         match ctype.mimetype.parse::<MediaTypeBuf>() {
@@ -195,6 +264,11 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
         }
     }
 
+    /// Whether the part is a multipart container, i.e. [`message_type`](Self::message_type) is
+    /// [`MultiPart`](MessageType::MultiPart).
+    ///
+    /// Note that this reflects what the headers *declare*. A part can be multipart while its
+    /// subparts are empty, when the declared boundary never appeared in the message.
     fn is_multipart(&self) -> bool {
         match self.message_type() {
             MessageType::SinglePart => false,
@@ -202,6 +276,11 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
         }
     }
 
+    /// The parsed `Content-Disposition` header, or `None` when there is none.
+    ///
+    /// Match [`ParsedContentDisposition::disposition`] against [`DispositionType`] for the
+    /// `inline` / `attachment` distinction, or read `params` for `filename` — see
+    /// [`CowMail::get_filename`].
     fn content_disposition(&self) -> Option<ParsedContentDisposition> {
         if let Some(header) = self.find_header("Content-Disposition") {
             let value = header.get_value();
@@ -210,6 +289,9 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
         None
     }
 
+    /// Whether the part declares `Content-Disposition: attachment`.
+    ///
+    /// A part with no `Content-Disposition` header, or an `inline` one, is not an attachment.
     fn is_attachment(&self) -> bool {
         match self.content_disposition() {
             Some(disp) => matches!(disp.disposition, DispositionType::Attachment),
@@ -217,6 +299,30 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
         }
     }
 
+    /// The body, transfer-decoded and interpreted as text.
+    ///
+    /// The `Content-Transfer-Encoding` header decides how to decode (case-insensitively, per RFC
+    /// 2045 section 6.1); the charset of the `Content-Type` decides how to turn the bytes into a
+    /// string. Use [`get_content_raw`](Self::get_content_raw) for anything that is not text.
+    ///
+    /// # Errors
+    ///
+    /// [`CowMailError::MailParseError`] if the body is not valid for the encoding it declares, or
+    /// cannot be decoded with the declared charset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use email_message::{CowMail, Mail};
+    ///
+    /// let raw = b"Content-Type: text/plain\r\n\
+    ///             Content-Transfer-Encoding: base64\r\n\
+    ///             \r\n\
+    ///             SGVsbG8sIHdvcmxkIQ==\r\n";
+    ///
+    /// let mail = CowMail::try_from(&raw[..]).unwrap();
+    /// assert_eq!(mail.get_content().unwrap(), "Hello, world!");
+    /// ```
     fn get_content(&self) -> Result<String, CowMailError> {
         let ctype = self.content_type();
         let transfer_encoding = self
@@ -229,6 +335,14 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
         }
     }
 
+    /// The body, transfer-decoded, as bytes.
+    ///
+    /// Like [`get_content`](Self::get_content) but without the charset step, so it works for
+    /// attachments and other binary content.
+    ///
+    /// # Errors
+    ///
+    /// [`CowMailError::MailParseError`] if the body is not valid for the encoding it declares.
     fn get_content_raw(&self) -> Result<Vec<u8>, CowMailError> {
         let ctype = self.content_type();
         let transfer_encoding = self
@@ -242,6 +356,10 @@ pub trait Mail<'a, T: Header<'a> + 'a>: HeaderMap<'a, T> {
     }
 }
 
+/// A fresh random multipart boundary: 68 alphanumeric characters.
+///
+/// Used by [`CowMail::make_mixed`] and friends when no boundary is given. Long enough that it will
+/// not occur in the content it separates.
 pub fn generate_boundary() -> String {
     rng()
         .sample_iter(&Alphanumeric)
@@ -289,19 +407,101 @@ enum BodyCheckStatus {
     NeedsTraversal,
 }
 
+/// An email message, or one part of a multipart one.
+///
+/// The central type of this crate. A message parsed from a buffer borrows from it: the headers keep
+/// their raw lines, the body keeps its slice, and only what is modified becomes owned. Each part of
+/// a multipart message is a `CowMail` in turn, held in [`subparts`](Self::subparts), so the same
+/// methods apply at every level.
+///
+/// Parse one with [`CowMail::try_from`] or [`parse_mail`], build one from scratch with
+/// [`new`](Self::new) / [`default`](Self::default), and write it back out with
+/// [`serialize`](Self::serialize) or through [`CowMailReader`]. Headers come from [`HeaderMap`],
+/// the MIME side from [`Mail`].
+///
+/// # Byte-exact round-trip
+///
+/// `parse → serialize` is byte-identical, which is why this type keeps more than the message's
+/// content: [`delimiter_end`](Self::delimiter_end) and [`end_bytes`](Self::end_bytes) carry the
+/// separators the message was written with, and the blank line after the headers follows the line
+/// ending of the header before it. Everything this crate writes itself uses CRLF, so a message
+/// whose headers were rewritten mixes line endings with its untouched parts — deliberately:
+/// fidelity for what was not touched.
+///
+/// # Public fields
+///
+/// `headers`, `body_bytes` and `subparts` are public on purpose: direct editing is the escape hatch
+/// for anything the provided methods do not cover. The consequence is that nothing derived from the
+/// headers can be cached, since there is no way to notice a change — see [`Mail::content_type`].
+///
+/// # Examples
+///
+/// ```
+/// use email_message::{CowMail, Header, HeaderMap, Mail};
+///
+/// let raw = b"Subject: Hi\r\n\r\nbody\r\n";
+/// let mut mail = CowMail::try_from(&raw[..]).unwrap();
+///
+/// assert_eq!(mail.find_value("Subject").unwrap(), "Hi");
+/// assert_eq!(mail.raw_body(), b"body");
+///
+/// // Untouched, it serializes back to the exact bytes it came from.
+/// assert_eq!(mail.serialize().concat(), raw.to_vec());
+///
+/// // Edit the header list directly.
+/// mail.headers.retain(|h| !h.key_eq("Subject"));
+/// assert!(mail.find_value("Subject").is_none());
+/// ```
 #[derive(Debug, Clone)]
 pub struct CowMail<'a, H: Header<'a>> {
+    /// The part exactly as it was parsed, headers and body, never modified.
+    ///
+    /// Empty for a part that was built rather than parsed.
     pub bytes_orig: &'a [u8],
+    /// The header block as it was parsed, up to and including the blank line that ends it.
+    ///
+    /// Kept after [`headers`](Self::headers) has been modified, and used to recover the line ending
+    /// to write the header/body separator with when the part has no headers left.
     pub header_bytes_orig: &'a [u8],
+    /// The headers of this part, in the order they appear in the message.
+    ///
+    /// Also reachable through [`HeaderMap`], which is implemented both for `CowMail` and for this
+    /// `Vec` itself — so `mail.find_value(..)` and `mail.headers.find_value(..)` both work.
     pub headers: Vec<H>,
+    /// The body of this part, still transfer-encoded, borrowed until something writes to it.
+    ///
+    /// For a multipart container this is the preamble before the first delimiter line, not the
+    /// subparts.
     pub body_bytes: Cow<'a, [u8]>,
+    /// The body as it was parsed.
+    ///
+    /// Unlike [`body_bytes`](Self::body_bytes) this stays put when the body is replaced, so the
+    /// original and the current body can be compared. Not used by this crate itself.
     pub body_bytes_orig: &'a [u8],
+    /// The parts of a multipart message, each one a `CowMail` of its own.
+    ///
+    /// Empty for a single part — and also for a part that declares a boundary which never appeared
+    /// in the message, in which case [`body_bytes`](Self::body_bytes) still holds everything and
+    /// [`serialize_body`](Self::serialize_body) will not invent a closing delimiter.
     pub subparts: Vec<CowMail<'a, H>>,
     /// What followed `--<boundary>` on the delimiter line introducing this part,
     /// usually `\r\n`. Kept verbatim so that a message written with bare LF, or
     /// with padding after the boundary, serializes back unchanged.
+    ///
+    /// Only the tail is stored, not the boundary itself, so it stays valid when the container is
+    /// given a new boundary with [`set_boundary`](Self::set_boundary) or the part moves elsewhere.
     pub delimiter_end: &'a [u8],
+    /// This part's terminator: the newline before the next delimiter line, or — for a container —
+    /// the epilogue after the closing delimiter.
+    ///
+    /// Empty when there is nothing to terminate, which is how [`new`](Self::new),
+    /// [`Mail::clear`] and [`Mail::clear_content`] leave it;
+    /// [`set_content_raw`](Self::set_content_raw) sets it to `\r\n` after writing a body.
     pub end_bytes: &'a [u8],
+    /// The content type to assume while this part has no `Content-Type` header.
+    ///
+    /// Set while parsing, since only then is it known whether the part sits in a
+    /// `multipart/digest`. See [`ContentType::default_conditional`].
     pub default_ctype: ContentType,
 }
 
