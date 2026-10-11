@@ -1,17 +1,16 @@
 [package]
 name = "cow-mail"
 version = "0.0.1"
-authors = ["Thomas Oettli <spacefreak@noop.ch>"]
+authors = ["Thomas Oettli"]
 edition = "2024"
-description = "Parse, modify and serialize email messages (RFC 5322/MIME) with copy-on-write, byte-exact round-trip"
-repository = "https://github.com/spacefreak86/cow-mail"
 license = "GPL-3.0-only"
-keywords = ["email", "mime", "rfc5322", "parser", "cow"]
-categories = ["email", "parser-implementations"]
 
-[profile.release]
-lto = true
-codegen-units = 1
+description = "Parse, modify and serialize email messages (RFC 5322/MIME) with copy-on-write, byte-exact round-trip"
+homepage = "https://github.com/spacefreak86/cow-mail/blob/master/README.md"
+repository = "https://github.com/spacefreak86/cow-mail"
+readme = "README.md"
+categories = ["email", "parser-implementations"]
+keywords = ["email", "mime", "rfc5322", "parser", "cow"]
 
 [dependencies]
 email-encoding = "0.4.2"

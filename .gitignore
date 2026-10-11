@@ -11,6 +11,3 @@ Cargo.lock
 
 # Ignore vscode config files
 .vscode
-
-# Ignore config file
-/dovecot-nextcloud-auth.toml
